@@ -135,7 +135,7 @@ runtime pass the guard, for example `r=rm; $r -rf x` or `f=.env; cat $f`. No
 text matcher can see through a variable. The OS sandbox is what stops those,
 so keep it on.
 
-Reference install: [Shelfie](https://github.com/OrenSegal/Shelfie) runs the
+Reference install: a private iOS app repo runs the
 same guard inside its larger `bash-pretool.sh`, with `sous.sh doctor` wired
 into its tooling CI.
 
