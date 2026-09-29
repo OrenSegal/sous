@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck -S warning hooks/sous-guard.sh tests/*.sh
+      - name: guard table
+        run: bash tests/sous-guard.test.sh
+      - name: red-team corpus
+        run: bash tests/adversarial.test.sh
+      - name: guard table on bash 3.2 (macOS system bash)
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/sous-guard.test.sh && /bin/bash tests/adversarial.test.sh
+      - name: install + doctor
+        run: bash tests/install.test.sh
+      - name: python syntax
+        run: python3 -m py_compile bin/sous
