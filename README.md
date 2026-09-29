@@ -42,6 +42,33 @@ For unattended runs add `--strict`. It sets `sandbox.allowUnsandboxedCommands`
 to `false`, so a command the sandbox blocks fails instead of retrying outside
 the sandbox. Only `excludedCommands` still run unsandboxed.
 
+## Bloat, rot and the feedback loop
+
+A harness that nobody maintains decays into one that blocks the wrong things.
+`sous doctor` fails on each of these:
+
+| Check | Why |
+| --- | --- |
+| a memory file over 400 lines (`SOUS_MEMORY_LINES`) | it loads on every turn |
+| a duplicate allow/ask/deny rule | noise that hides intent |
+| an allow/ask rule naming a script that no longer exists | a renamed script loses its rule without anyone seeing |
+| a guard slower than 500ms (`SOUS_GUARD_MS`) | it runs before every Bash call |
+| a stale copied guard | `sous install` refreshes it |
+
+Doctor caches passing table results by content hash, so it reruns the 100+
+cases only after the guard or the tables change.
+
+The guard appends every block to `~/.claude/sous/blocks.tsv` as a timestamp and
+a reason, never the command text, since commands can hold secrets. Set
+`SOUS_LOG=off` to disable it. `sous report` counts blocks by reason and says
+how to act on them:
+- A false positive becomes a `check 0` row.
+- A new bypass becomes a `check 2` row that fails first.
+- A rule that never fires is a deletion candidate.
+
+The known-gap rows keep the docs honest. If the guard ever starts blocking one
+of them, the corpus goes red and the docs get revisited.
+
 `sous probe` prints red-team prompts to paste into a fresh session. The sandbox
 is part of Claude Code's runtime, not a file, so only a live session can prove it.
 
@@ -88,7 +115,7 @@ with it rather than living inside it:
 
 ```bash
 bash tests/sous-guard.test.sh     # 35-case table, bash 3.2 compatible
-bash tests/adversarial.test.sh    # 74-case red-team corpus
+bash tests/adversarial.test.sh    # 78-case red-team corpus + block-log contract
 bash tests/install.test.sh        # install/strict/dry-run into temp projects, doctor passes
 ```
 

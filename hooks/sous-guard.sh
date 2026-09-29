@@ -22,7 +22,22 @@
 # Red-team corpus and known gaps: tests/adversarial.test.sh. Runs on bash 3.2.
 
 # Prints the block reason and returns 1 when $1 must not run; returns 0 otherwise.
+# Every block appends "epoch<TAB>reason" to $SOUS_LOG (default
+# ~/.claude/sous/blocks.tsv; SOUS_LOG=off disables). Reason only, never the
+# command: command text can carry secrets. `sous report` reads it back so the
+# rules get tuned from what fired, not from memory.
 sous_guard() {
+  local reason
+  reason=$(_sous_match "$1") && return 0
+  printf '%s\n' "$reason"
+  local log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}"
+  if [[ $log != off ]]; then
+    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\n' "$(date +%s)" "$reason" >>"$log"; } 2>/dev/null
+  fi
+  return 1
+}
+
+_sous_match() {
   local cmd="$1" scan="" line trim delim="" keep=0 m norm seg first rest flags args tok
 
   # 1. Heredoc bodies are data (a commit message naming `rm -rf`) unless the
