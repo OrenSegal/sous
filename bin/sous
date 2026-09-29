@@ -14,6 +14,7 @@ Usage:
   sous doctor  [DIR] [--ios] [--strict]               exit 1 if any layer is broken
   sous status  [DIR] [--ios] [--strict]               same checks, never fails, plus host info
   sous probe                                          live red-team prompts for a fresh session
+  sous report  [--days=N]                             what the guard blocked, and how to tune it
 
 --ios adds the Xcode toolchain exclusions (xcodebuild nests its own sandbox and
 cannot run inside Claude Code's). It is auto-detected from *.xcodeproj,
@@ -23,18 +24,28 @@ cannot run inside Claude Code's). It is auto-detected from *.xcodeproj,
 (allowUnsandboxedCommands: false), so a blocked command fails instead of
 retrying outside the sandbox. Only excludedCommands still run unsandboxed.
 """
+import collections
 import copy
+import filecmp
 import glob
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 
 SOUS_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 HOOK_SRC = os.path.join(SOUS_ROOT, "hooks", "sous-guard.sh")
-HOOK_TESTS = [os.path.join(SOUS_ROOT, "tests", n) for n in ("sous-guard.test.sh", "adversarial.test.sh")]
+# Budgets: a memory file past this is loaded every turn and mostly skimmed; a
+# guard slower than this taxes every Bash call. Override per project via env.
+MEMORY_LINE_BUDGET = int(os.environ.get("SOUS_MEMORY_LINES", "400"))
+GUARD_MS_BUDGET = int(os.environ.get("SOUS_GUARD_MS", "500"))
+BLOCK_LOG = os.environ.get("SOUS_LOG") or os.path.expanduser("~/.claude/sous/blocks.tsv")
+HOOK_TESTS =[os.path.join(SOUS_ROOT, "tests", n) for n in ("sous-guard.test.sh", "adversarial.test.sh")]
 SKILLS_SRC = os.path.join(SOUS_ROOT, "skills")
 USER_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 GUARD_MARKER = "BLOCKED (sous)"
@@ -114,6 +125,12 @@ def install(root, ios, strict, dry_run):
     existing_guard = guard_in(settings, root)
 
     template = load(os.path.join(SOUS_ROOT, "templates", "settings.base.json"))
+    hook_dst = os.path.join(claude_dir, "hooks", "sous-guard.sh")
+    # sous owns its copied guard, so a stale one is refreshed; a guard someone
+    # vendored into their own hook elsewhere is theirs to sync.
+    refresh = os.path.isfile(hook_dst) and not filecmp.cmp(HOOK_SRC, hook_dst, shallow=False)
+    if refresh:
+        notes.append("update .claude/hooks/sous-guard.sh (stale copy)")
     if existing_guard:
         template.pop("hooks", None)
         notes.append(f"keep existing guard hook {existing_guard}")
@@ -130,7 +147,6 @@ def install(root, ios, strict, dry_run):
         if rule in perm.get("ask", []) or rule in perm.get("deny", []):
             notes.append(f"warn permissions.allow also holds {rule}; remove it from allow")
 
-    hook_dst = os.path.join(claude_dir, "hooks", "sous-guard.sh")
     skill_copies = []
     for name in sorted(os.listdir(SKILLS_SRC)):
         dst = os.path.join(claude_dir, "skills", name)
@@ -151,7 +167,7 @@ def install(root, ios, strict, dry_run):
         with open(settings_path, "w") as f:
             json.dump(settings, f, indent=2)
             f.write("\n")
-    if not existing_guard:
+    if refresh or not existing_guard:
         os.makedirs(os.path.dirname(hook_dst), exist_ok=True)
         shutil.copy2(HOOK_SRC, hook_dst)
         os.chmod(hook_dst, 0o755)
@@ -200,6 +216,12 @@ def doctor(root, ios, strict, mode):
     print("Layer 1 memory")
     found = [n for n in ("CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md") if os.path.isfile(os.path.join(root, n))]
     r.ok("memory file: " + ", ".join(found)) if found else r.info("no CLAUDE.md / AGENTS.md (agent starts cold)")
+    for n in found:
+        with open(os.path.join(root, n), errors="replace") as f:
+            lines = sum(1 for _ in f)
+        # Bloat: every line is paid for on every turn. Move detail to linked docs.
+        r.bad(f"{n} is {lines} lines, over the {MEMORY_LINE_BUDGET}-line budget (SOUS_MEMORY_LINES)") \
+            if lines > MEMORY_LINE_BUDGET else r.ok(f"{n} {lines}/{MEMORY_LINE_BUDGET} lines")
 
     print("Layer 2 tools")
     r.info(".mcp.json present" if os.path.isfile(os.path.join(root, ".mcp.json")) else "no project .mcp.json")
@@ -219,6 +241,20 @@ def doctor(root, ios, strict, mode):
         r.info("escape hatch open: unsandboxed retries ask first (--strict closes it for unattended runs)")
     overlap = [a for a in perm.get("allow", []) if a in perm.get("ask", []) or a in perm.get("deny", [])]
     r.bad("allow also holds " + ", ".join(overlap)) if overlap else r.ok("no allow/ask/deny overlap")
+    dups = sorted({f"{k}:{x}" for k in ("allow", "ask", "deny")
+                   for x, c in collections.Counter(perm.get(k, [])).items() if c > 1})
+    r.bad("duplicate rules " + ", ".join(dups)) if dups else r.ok("no duplicate rules")
+    # Rot: a rule for a script that was deleted or renamed permits nothing and
+    # hides that the real script now prompts (or worse, got a broader rule).
+    dead = []
+    for k in ("allow", "ask"):
+        for rule in perm.get(k, []):
+            m = re.match(r"Bash\((\S+?)(?::\*|\s|\))", rule)
+            p = m.group(1) if m else ""
+            if "/" in p and not p.startswith(("/", "~", "$")) and not re.search(r"[*?\[]", p) \
+                    and not os.path.exists(os.path.join(root, p)):
+                dead.append(rule)
+    r.bad("rules name missing scripts: " + ", ".join(dead)) if dead else r.ok("no rules for missing scripts")
 
     print("Layer 4 hooks")
     for p in hook_scripts(s, root):
@@ -229,12 +265,41 @@ def doctor(root, ios, strict, mode):
         r.bad("no PreToolUse hook carries the sous guard")
     else:
         # Run the tables against the hook Claude Code will actually call, not sous's copy.
-        env = dict(os.environ, SOUS_GUARD_HOOK=guard, BASH_PRETOOL_HOOK=guard)
-        for test in HOOK_TESTS:
-            res = subprocess.run(["bash", test], env=env, capture_output=True, text=True)
-            tail = (res.stdout.strip().splitlines() or ["no output"])[-1]
-            name = os.path.basename(test).replace(".test.sh", "")
-            r.ok(f"{name}: {tail}") if res.returncode == 0 else r.bad(f"{name} on {guard}: {tail}")
+        # A pass is cached by content hash of the guard, its sourced sibling and
+        # the tables, so doctor only pays for the 100+ cases when one of them changed.
+        sibling = os.path.join(os.path.dirname(guard), "sous-guard.sh")
+        key = hashlib.sha256(b"".join(open(p, "rb").read() for p in [guard, sibling, *HOOK_TESTS]
+                                      if os.path.isfile(p))).hexdigest()[:16]
+        cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "sous", f"tables-{key}")
+        if os.path.isfile(cache):
+            with open(cache) as f:
+                for line in f.read().splitlines():
+                    r.ok(f"{line} (cached, unchanged)")
+        else:
+            env = dict(os.environ, SOUS_GUARD_HOOK=guard, BASH_PRETOOL_HOOK=guard)
+            passed = []
+            for test in HOOK_TESTS:
+                res = subprocess.run(["bash", test], env=env, capture_output=True, text=True)
+                tail = (res.stdout.strip().splitlines() or ["no output"])[-1]
+                name = os.path.basename(test).replace(".test.sh", "")
+                if res.returncode == 0:
+                    r.ok(f"{name}: {tail}")
+                    passed.append(f"{name}: {tail}")
+                else:
+                    r.bad(f"{name} on {guard}: {tail}")
+            if len(passed) == len(HOOK_TESTS):
+                try:
+                    os.makedirs(os.path.dirname(cache), exist_ok=True)
+                    with open(cache, "w") as f:
+                        f.write("\n".join(passed) + "\n")
+                except OSError:
+                    pass
+        ms = guard_latency_ms(guard)
+        r.ok(f"guard answers in {ms}ms (budget {GUARD_MS_BUDGET}ms)") if ms <= GUARD_MS_BUDGET \
+            else r.bad(f"guard takes {ms}ms per Bash call, over {GUARD_MS_BUDGET}ms (SOUS_GUARD_MS)")
+        copied = os.path.join(root, ".claude", "hooks", "sous-guard.sh")
+        if os.path.isfile(copied) and not filecmp.cmp(HOOK_SRC, copied, shallow=False):
+            r.bad("project .claude/hooks/sous-guard.sh is stale vs sous; rerun sous install")
 
     print("Layer 5 gates")
     miss = [a for a in REQUIRED_ASK if a not in perm.get("ask", [])]
@@ -248,6 +313,14 @@ def doctor(root, ios, strict, mode):
     else:
         r.bad('~/.claude/settings.json lacks permissions.disableBypassPermissionsMode: "disable"')
 
+    print("Feedback loop")
+    rows = read_blocks(30)
+    if rows:
+        top, n = collections.Counter(rows).most_common(1)[0]
+        r.info(f"{len(rows)} blocks in 30 days, most often: {top} ({n}x); `sous report` to tune")
+    else:
+        r.info("no blocks logged in 30 days")
+
     if mode == "status":
         print("Host")
         for tool, why in (("docker", "Linux lane: web / edge / backend"), ("tart", "macOS VM lane: unattended iOS")):
@@ -259,6 +332,53 @@ def doctor(root, ios, strict, mode):
         return 1 if mode == "doctor" else 0
     print("sous: all layers hold.")
     return 0
+
+
+def guard_latency_ms(hook):
+    """Best of three on a benign command: the tax every Bash call pays."""
+    payload = json.dumps({"tool_input": {"command": "git status && ls -la src | head -5"}})
+    env = dict(os.environ, SOUS_LOG="off", CLAUDE_TOOL_INPUT="")
+    best = None
+    with tempfile.TemporaryDirectory() as d:
+        for _ in range(3):
+            t = time.monotonic()
+            subprocess.run(["bash", hook], input=payload, text=True, cwd=d, env=env, capture_output=True)
+            ms = int((time.monotonic() - t) * 1000)
+            best = ms if best is None else min(best, ms)
+    return best
+
+
+def read_blocks(days):
+    if BLOCK_LOG == "off" or not os.path.isfile(BLOCK_LOG):
+        return []
+    cutoff = time.time() - days * 86400
+    out = []
+    with open(BLOCK_LOG, errors="replace") as f:
+        for line in f:
+            ts, _, reason = line.rstrip("\n").partition("\t")
+            if ts.isdigit() and int(ts) >= cutoff and reason:
+                out.append(reason.replace("BLOCKED (sous): ", "").split(".")[0])
+    return out
+
+
+def report(days):
+    rows = read_blocks(days)
+    print(f"sous report: {len(rows)} blocks in the last {days} days ({BLOCK_LOG})\n")
+    for reason, n in collections.Counter(rows).most_common():
+        print(f"  {n:5d}  {reason}")
+    print(REPORT_LOOP)
+    return 0
+
+
+REPORT_LOOP = """
+How to act on this (the guard improves only through the corpus):
+  false positive  add the benign command as `check 0` in tests/adversarial.test.sh,
+                  watch it fail, then narrow the rule until it passes
+  bypass seen     add it as `check 2` first (red), then widen the rule (green)
+  rule never      a rule with zero hits for months is a candidate to delete;
+  fires           fewer rules = faster guard, less to trust
+Then upstream the change to sous and rerun `sous install` everywhere it's vendored.
+"""
 
 
 PROBES = """
@@ -300,6 +420,9 @@ def main(argv):
     if cmd == "probe":
         print(PROBES.strip())
         return 0
+    if cmd == "report":
+        days = next((int(a.split("=", 1)[1]) for a in flags if a.startswith("--days=")), 30)
+        return report(days)
     print(f"sous: unknown command {cmd}\n\n{__doc__.strip()}", file=sys.stderr)
     return 64
 

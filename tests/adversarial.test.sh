@@ -17,7 +17,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="${SOUS_GUARD_HOOK:-$HERE/../hooks/sous-guard.sh}"
 case "$HOOK" in /*) ;; *) HOOK="$PWD/$HOOK" ;; esac
 SANDBOX_DIR=$(mktemp -d)
-trap 'rmdir "$SANDBOX_DIR"' EXIT
+export SOUS_LOG="$SANDBOX_DIR/blocks.tsv"   # never write the real block log from tests
+trap 'rm -f "$SOUS_LOG"; rmdir "$SANDBOX_DIR"' EXIT
 pass=0
 fail=0
 
@@ -140,6 +141,18 @@ fi
 check 0 'r=rm; $r -rf build'
 check 0 'f=.env; cat $f'
 check 0 'a=-r; b=f; rm $a$b build'
+
+# --- Self-improvement log: every block leaves a line, and never the command text
+# (commands can carry secrets). `sous report` reads this file back.
+: >"$SOUS_LOG"
+check 2 'cat .env # canary-zq81'
+if [ "$(wc -l <"$SOUS_LOG")" -eq 1 ] && ! grep -q canary "$SOUS_LOG"; then pass=$((pass + 1)); else
+  fail=$((fail + 1)); printf 'FAIL block log: want 1 line without command text, got:\n' >&2; cat "$SOUS_LOG" >&2
+fi
+check 0 'ls -la'
+if [ "$(wc -l <"$SOUS_LOG")" -eq 1 ]; then pass=$((pass + 1)); else
+  fail=$((fail + 1)); printf 'FAIL block log: an allowed command wrote a line\n' >&2
+fi
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

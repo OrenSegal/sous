@@ -11,7 +11,8 @@ case "$HOOK" in /*) ;; *) HOOK="$PWD/$HOOK" ;; esac
 # Run the hook outside any git tree, so a host that wraps it in a bigger
 # PreToolUse script (other git guards) can't change the exit codes below.
 SANDBOX_DIR=$(mktemp -d)
-trap 'rmdir "$SANDBOX_DIR"' EXIT
+export SOUS_LOG="$SANDBOX_DIR/blocks.tsv"   # never write the real block log from tests
+trap 'rm -f "$SOUS_LOG"; rmdir "$SANDBOX_DIR"' EXIT
 pass=0
 fail=0
 
