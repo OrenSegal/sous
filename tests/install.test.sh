@@ -6,7 +6,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOUS="$HERE/../bin/sous"
-WORK=$(mktemp -d)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/sous-test.XXXXXX") || exit 1  # macOS bare mktemp ignores TMPDIR
 trap 'rm -r "$WORK"' EXIT
 export CI=1   # skip user-scope checks: this host's ~/.claude is not under test
 export SOUS_LOG="$WORK/blocks.tsv"   # never read or write the real block log

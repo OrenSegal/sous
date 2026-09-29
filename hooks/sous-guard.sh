@@ -68,6 +68,28 @@ _sous_match() {
     scan="${scan/"$m"/ MSG}"
   done
 
+  # 2b. A jq/yq filter is a program, not a path: in `jq '.env' f`, `.env` is a key.
+  #     Blank the first positional at command position. Anything that can expand
+  #     ($, backtick, <, >) or a -f filter file keeps the text, so the secrets check sees it.
+  local sq="'" dq='"' bt='`' lf=$'\n'
+  local jv="([^[:space:]\$${bt}${sq}${dq}()]+|${sq}[^${sq}]*${sq}|${dq}[^${dq}\$${bt}]*${dq})"
+  local jf="(${sq}[^${sq}]*${sq}|${dq}[^${dq}\$${bt}]*${dq}|[^-[:space:]${sq}${dq}|;&\$${bt}<>()][^[:space:]${sq}${dq}|;&\$${bt}<>()]*)"
+  local re_jq="(^|[;&|(${bt}${lf}])[[:space:]]*(jq|yq|gojq)(([[:space:]]+(--(arg|argjson|slurpfile|rawfile)[[:space:]]+${jv}[[:space:]]+${jv}|--indent[[:space:]]+[0-9]+|-[[:alpha:]]+|--[[:alpha:]-]+))*)[[:space:]]+${jf}"
+  local jout="" jrest="$scan" jm jflags jfilt
+  while [[ $jrest =~ $re_jq ]]; do
+    jm="${BASH_REMATCH[0]}"
+    jflags=" ${BASH_REMATCH[3]} "
+    jfilt="${BASH_REMATCH[$(( ${#BASH_REMATCH[@]} - 1 ))]}"
+    jout+="${jrest%%"$jm"*}"
+    if [[ $jflags =~ [[:space:]](-[[:alpha:]]*f[[:alpha:]]*|--from-file)[[:space:]] ]]; then
+      jout+="$jm"
+    else
+      jout+="${jm%"$jfilt"}F"
+    fi
+    jrest="${jrest#*"$jm"}"
+  done
+  scan="$jout$jrest"
+
   # 3. Normalize: quotes and backslashes don't change which program runs.
   norm="${scan//\"/}"
   norm="${norm//\'/}"
