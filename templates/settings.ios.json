@@ -1,0 +1,19 @@
+{
+  "sandbox": {
+    "excludedCommands": [
+      "xcodebuild *",
+      "xcrun *",
+      "swift *",
+      "swiftlint *",
+      "fastlane *"
+    ],
+    "network": {
+      "allowedDomains": [
+        "swift.org",
+        "*.swift.org",
+        "cocoapods.org",
+        "cdn.cocoapods.org"
+      ]
+    }
+  }
+}
