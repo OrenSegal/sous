@@ -16,7 +16,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="${SOUS_GUARD_HOOK:-$HERE/../hooks/sous-guard.sh}"
 case "$HOOK" in /*) ;; *) HOOK="$PWD/$HOOK" ;; esac
-SANDBOX_DIR=$(mktemp -d)
+SANDBOX_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sous-test.XXXXXX") || exit 1  # macOS bare mktemp ignores TMPDIR
 export SOUS_LOG="$SANDBOX_DIR/blocks.tsv"   # never write the real block log from tests
 trap 'rm -f "$SOUS_LOG"; rmdir "$SANDBOX_DIR"' EXIT
 pass=0
@@ -99,6 +99,21 @@ check 2 'cat ~/.aws/credentials'
 check 0 'cat .env.example'
 check 0 'cp .env.example .env.local.example'
 check 0 'echo "see .env.example for names"'
+# jq/yq filter is a program, not a path: `.env` there is a key (false positive 2026-09-29).
+check 0 "jq -r '.env // {} | keys[]' ~/.claude/settings.json"
+check 0 'jq .env settings.json'
+check 0 'jq -c --arg k v ".env.FOO" settings.json'
+check 0 "cd x && jq '.env' a.json"
+check 2 "jq '.x' .env"
+check 2 "jq '.env' .env"
+check 2 'jq -n --rawfile s .env "$s"'
+check 2 'jq -f .env settings.json'
+check 2 'jq -rf .env settings.json'
+check 2 'cat jq .env'
+check 2 'jq "$(cat .env)" a.json'
+check 2 'jq --arg k "$(cat .env)" .x a.json'
+check 2 'jq .x`cat .env`'
+check 2 "jq '.env' a.json; cat .env"
 
 # --- construction: decode or fetch, piped into a shell
 check 2 'echo cm0gLXJmIGJ1aWxk | base64 -d | sh'
