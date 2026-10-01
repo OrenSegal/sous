@@ -11,6 +11,7 @@ trap 'rm -r "$WORK"' EXIT
 export CI=1   # skip user-scope checks: this host's ~/.claude is not under test
 export SOUS_LOG="$WORK/blocks.tsv"   # never read or write the real block log
 export XDG_CACHE_HOME="$WORK/cache"  # table cache starts cold per run
+export SOUS_TABLE_CACHE=on           # ...and is trusted under CI=1: it is this run's own, fresh
 pass=0
 fail=0
 
@@ -197,15 +198,71 @@ expect "module, package script and project-var rules pass" 0 python3 "$SOUS" doc
 # Table cache: only a clean pass recorded by doctor reads as green.
 mkdir -p "$WORK/home2/.claude"
 nonci() { env -u CI -u GITHUB_ACTIONS HOME="$WORK/home2" "$@"; }
-expect "doctor outside CI writes the cache" 0 nonci python3 "$SOUS" doctor "$p1"
+expect "doctor outside CI passes" 0 nonci python3 "$SOUS" doctor "$p1"
 expect "second run uses it" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "(cached, unchanged)"' _ "$WORK/home2" "$SOUS" "$p1"
 for f in "$XDG_CACHE_HOME"/sous/tables-*; do printf 'sous-guard: trust me\nadversarial: trust me\n' > "$f"; done
 expect "forged cache is ignored" 0 sh -c '! env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "trust me"' _ "$WORK/home2" "$SOUS" "$p1"
-expect "CI never trusts the cache" 0 sh -c '! python3 "$1" doctor "$2" | grep -q "(cached"' _ "$SOUS" "$p1"
+expect "CI never trusts the cache by default" 0 sh -c '! env -u SOUS_TABLE_CACHE python3 "$1" doctor "$2" | grep -q "(cached"' _ "$SOUS" "$p1"
 printf '{"permissions": \n' > "$WORK/home2/.claude/settings.json"
 expect "broken user settings: clean FAIL" 1 notrace nonci python3 "$SOUS" doctor "$p1"
 expect "broken user settings named" 0 grep -q "user settings unreadable" "$WORK/nt.txt"
 rm "$WORK/home2/.claude/settings.json"
+
+# settings.local.json layers over settings.json: it can switch the sandbox off.
+printf '{"sandbox": {"enabled": false}}\n' > "$p1/.claude/settings.local.json"
+expect "local overlay that disables the sandbox fails" 1 python3 "$SOUS" doctor "$p1"
+printf '{"permissions": {"allow": ["Bash(npm test:*)"]}}\n' > "$p1/.claude/settings.local.json"
+expect "local overlay that only adds passes" 0 python3 "$SOUS" doctor "$p1"
+printf '{"sandbox": \n' > "$p1/.claude/settings.local.json"
+expect "broken local overlay: clean FAIL" 1 notrace python3 "$SOUS" doctor "$p1"
+rm "$p1/.claude/settings.local.json"
+
+# Version drift: an older stamped (or unstamped) copy says upgrade; same version edited says stale.
+sed 's/^SOUS_GUARD_VERSION=.*/SOUS_GUARD_VERSION=0.2.9/' "$HERE/../hooks/sous-guard.sh" > "$p6/.claude/hooks/sous-guard.sh"
+expect "old guard copy fails" 1 python3 "$SOUS" doctor "$p6"
+expect "old guard copy named by version" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "is v0.2.9, sous is .*sous upgrade"' _ "$SOUS" "$p6"
+grep -v '^SOUS_GUARD_VERSION=' "$HERE/../hooks/sous-guard.sh" > "$p6/.claude/hooks/sous-guard.sh"
+expect "unstamped guard copy named" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "unstamped (before 0.3.0)"' _ "$SOUS" "$p6"
+echo "# drift" >> "$p6/.claude/hooks/sous-guard.sh"; python3 "$SOUS" install "$p6" >/dev/null
+echo "# drift" >> "$p6/.claude/hooks/sous-guard.sh"
+expect "same-version edit says stale" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "stale vs sous (same version"' _ "$SOUS" "$p6"
+python3 "$SOUS" install "$p6" >/dev/null
+# CRLF checkouts (core.autocrlf on Windows) break bash.
+python3 -c 'import sys; p=sys.argv[1]; d=open(p,"rb").read(); open(p,"wb").write(d.replace(b"\n", b"\r\n"))' "$p6/.claude/hooks/sous-guard.sh"
+expect "CRLF guard named" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "CRLF line endings"' _ "$SOUS" "$p6"
+python3 "$SOUS" install "$p6" >/dev/null
+
+# Strict: the host must be able to sandbox, and a live probe must be on record
+# for these exact settings. Outside CI only (the record is the author's).
+expect "strict outside CI wants a probe" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" --strict | grep -q "FAIL  strict: sandbox never probed live"' _ "$WORK/home2" "$SOUS" "$p5"
+expect "non-strict only notes it" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "info  sandbox never probed live"' _ "$WORK/home2" "$SOUS" "$p5"
+expect "probe --record" 0 nonci python3 "$SOUS" probe --record "$p5"
+expect "recorded probe satisfies strict" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" --strict | grep -q "ok    probed live"' _ "$WORK/home2" "$SOUS" "$p5"
+expect "strict doctor names the sandbox host" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" --strict | grep -q "sandbox host: "' _ "$WORK/home2" "$SOUS" "$p5"
+addrule "$p5/.claude/settings.json" allow "Bash(make:*)"
+expect "changed settings need a fresh probe" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" --strict | grep -q "FAIL  strict: permissions or sandbox changed since the probe"' _ "$WORK/home2" "$SOUS" "$p5"
+expect "probe --record on a missing dir" 64 python3 "$SOUS" probe --record "$WORK/nope"
+
+# Plugin + project copy: the guard would run twice. HOME is faked with the
+# sous plugin enabled and installed from this repo.
+h3="$WORK/home3"; mkdir -p "$h3/.claude/plugins"
+printf '{"enabledPlugins": {"sous@sous": true}, "permissions": {"disableBypassPermissionsMode": "disable"}}\n' > "$h3/.claude/settings.json"
+printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"}]}}\n' "$(cd "$HERE/.." && pwd)" > "$h3/.claude/plugins/installed_plugins.json"
+expect "plugin + project guard fails" 1 env -u CI HOME="$h3" python3 "$SOUS" doctor "$p1"
+expect "double guard names the fix" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "runs 2 times per Bash call.*enabledPlugins"' _ "$h3" "$SOUS" "$p1"
+expect "install warns about the double guard" 0 sh -c 'env -u CI HOME="$1" python3 "$2" install "$3" --dry-run | grep -q "warn plugin sous@sous runs the guard too"' _ "$h3" "$SOUS" "$p1"
+printf '{"enabledPlugins": {"sous@sous": false}}\n' > "$p1/.claude/settings.local.json"
+expect "plugin off for this project: one guard" 0 env -u CI HOME="$h3" python3 "$SOUS" doctor "$p1"
+rm "$p1/.claude/settings.local.json"
+cp -R "$p1" "$WORK/pluginonly"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.pop("hooks"); json.dump(d,open(p,"w"))' "$WORK/pluginonly/.claude/settings.json"
+expect "plugin-only guard is enough" 0 env -u CI HOME="$h3" python3 "$SOUS" doctor "$WORK/pluginonly"
+printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "project", "projectPath": "/elsewhere", "installPath": "%s"}]}}\n' "$(cd "$HERE/.." && pwd)" > "$h3/.claude/plugins/installed_plugins.json"
+expect "a plugin installed for another project does not count" 1 env -u CI HOME="$h3" python3 "$SOUS" doctor "$WORK/pluginonly"
+mkdir -p "$WORK/badplugin/hooks"
+printf '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "\\"${CLAUDE_PLUGIN_ROOT}\\"/bin/gone"}]}]}}\n' > "$WORK/badplugin/hooks/hooks.json"
+printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"}]}}\n' "$WORK/badplugin" > "$h3/.claude/plugins/installed_plugins.json"
+expect "plugin hooks.json pointing at a missing file is named" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "plugin sous@sous: SessionStart hook points at missing"' _ "$h3" "$SOUS" "$p1"
 
 # Usage errors exit 64 instead of being ignored.
 expect "unknown option" 64 python3 "$SOUS" doctor "$p1" --stirct

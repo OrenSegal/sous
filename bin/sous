@@ -63,6 +63,8 @@ BLOCK_LOG = os.environ.get("SOUS_LOG") or os.path.expanduser("~/.claude/sous/blo
 HOOK_TESTS =[os.path.join(SOUS_ROOT, "tests", n) for n in ("sous-guard.test.sh", "adversarial.test.sh")]
 SKILLS_SRC = os.path.join(SOUS_ROOT, "skills")
 USER_SETTINGS = os.path.expanduser("~/.claude/settings.json")
+INSTALLED_PLUGINS = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
+PROBES_FILE = os.path.expanduser("~/.claude/sous/probes.json")
 GUARD_MARKER = "BLOCKED (sous)"
 
 REQUIRED_DENY = [
@@ -289,6 +291,135 @@ def guard_in(settings, root):
     return g[0] if g else None
 
 
+def guard_version(path):
+    """The SOUS_GUARD_VERSION stamp in a guard file; None before 0.3.0."""
+    try:
+        with open(path, errors="replace") as f:
+            m = re.search(r"^SOUS_GUARD_VERSION=([\w.+-]+)", f.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def overlay(base, local):
+    """Project settings as Claude Code sees them: settings.local.json over
+    settings.json. Assumed semantics (not verified against Claude Code's
+    source): lists add up, objects merge, local scalars win."""
+    out = copy.deepcopy(base)
+    for k, v in local.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = overlay(out[k], v)
+        elif isinstance(v, list) and isinstance(out.get(k), list):
+            out[k] = out[k] + [x for x in v if x not in out[k]]
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def sous_plugins(root, layers):
+    """(name, installPath) for each enabled sous plugin install that applies
+    to root. layers: user, project, local settings, lowest precedence first."""
+    enabled = {}
+    for data in layers:
+        ep = _dict(data).get("enabledPlugins")
+        if isinstance(ep, dict):
+            enabled.update(ep)
+    names = [k for k, v in enabled.items() if v is True and isinstance(k, str) and k.split("@", 1)[0] == "sous"]
+    installed = _dict(read_json_quiet(INSTALLED_PLUGINS).get("plugins"))
+    out = []
+    for name in names:
+        entries = installed.get(name)
+        for e in entries if isinstance(entries, list) else []:
+            ip, pp = _dict(e).get("installPath"), _dict(e).get("projectPath")
+            if not isinstance(ip, str):
+                continue
+            if e.get("scope") in ("project", "local") and isinstance(pp, str) and os.path.realpath(pp) != root:
+                continue
+            out.append((name, ip))
+    return out
+
+
+def plugin_hook_problems(plugin_root, root):
+    """hooks.json commands in a plugin that point at files it doesn't ship."""
+    path = os.path.join(plugin_root, "hooks", "hooks.json")
+    try:
+        data = read_json(path)[0]
+    except SettingsError as e:
+        return [str(e)]
+    out = []
+    for event, groups in _dict(data.get("hooks")).items():
+        for group in groups if isinstance(groups, list) else []:
+            hooks = _dict(group).get("hooks")
+            for h in hooks if isinstance(hooks, list) else []:
+                cmd = _dict(h).get("command")
+                if not isinstance(cmd, str):
+                    continue
+                try:
+                    tokens = shlex.split(_expand_vars(cmd, root, plugin_root))
+                except ValueError:
+                    out.append(f"{event} command does not parse: {cmd}")
+                    continue
+                for i, t in enumerate(tokens):
+                    if not t.startswith(plugin_root.rstrip("/") + "/"):
+                        continue
+                    if not os.path.isfile(t):
+                        out.append(f"{event} hook points at missing {t}")
+                    elif i == 0 and not os.access(t, os.X_OK):
+                        out.append(f"{event} hook {t} is not executable")
+    return out
+
+
+def sandbox_host():
+    """(ok, detail): whether this host has what Claude Code's sandbox needs.
+    Per Claude Code's docs: Seatbelt on macOS, bubblewrap + socat on Linux and
+    WSL2; WSL1 and native Windows have no sandbox."""
+    if sys.platform == "darwin":
+        ok = os.path.exists("/usr/bin/sandbox-exec")
+        return ok, "Seatbelt (/usr/bin/sandbox-exec)" + ("" if ok else " missing")
+    if sys.platform.startswith("linux"):
+        rel = os.uname().release.lower()
+        if "microsoft" in rel and "wsl2" not in rel and "standard" not in rel:
+            return False, f"WSL1 ({rel}) has no sandbox; use WSL2"
+        missing = [t for t in ("bwrap", "socat") if not shutil.which(t)]
+        return not missing, "bubblewrap + socat" + (f": missing {', '.join(missing)}" if missing else "")
+    return False, f"{sys.platform} has no Claude Code sandbox (macOS, Linux and WSL2 do)"
+
+
+def settings_fingerprint(effective):
+    """What a live probe vouched for: the permissions and sandbox blocks."""
+    core = {"permissions": effective.get("permissions"), "sandbox": effective.get("sandbox")}
+    return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def load_project(root):
+    """(settings, local, effective) for root; raises SettingsError."""
+    claude = os.path.join(root, ".claude")
+    s = read_json(os.path.join(claude, "settings.json"))[0]
+    lp = os.path.join(claude, "settings.local.json")
+    local = read_json(lp)[0] if os.path.isfile(lp) else {}
+    return s, local, overlay(s, local)
+
+
+def probe_record(root):
+    try:
+        effective = load_project(root)[2]
+    except SettingsError as e:
+        print(f"sous: {e}", file=sys.stderr)
+        return 1
+    try:
+        data = read_json(PROBES_FILE)[0] if os.path.isfile(PROBES_FILE) else {}
+    except SettingsError:
+        data = {}
+    projects = _dict(data.get("projects"))
+    projects[root] = {"fingerprint": settings_fingerprint(effective),
+                      "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "sous": SOUS_VERSION}
+    os.makedirs(os.path.dirname(PROBES_FILE), exist_ok=True)
+    write_json_atomic(PROBES_FILE, {"sous_probes": 1, "projects": projects})
+    print(f"sous: recorded that the live probes held for {root} ({projects[root]['fingerprint']}).\n"
+          "      This is your word, not a test sous ran; doctor --strict asks again when the settings change.")
+    return 0
+
+
 # --------------------------------------------------------------------- install
 def install(root, ios, strict, dry_run):
     claude_dir = os.path.join(root, ".claude")
@@ -327,6 +458,12 @@ def install(root, ios, strict, dry_run):
     for rule in _rules(perm.get("allow")):
         if rule in _rules(perm.get("ask")) or rule in _rules(perm.get("deny")):
             notes.append(f"warn permissions.allow also holds {rule}; remove it from allow")
+    if not (os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI")):
+        local = read_json_quiet(os.path.join(claude_dir, "settings.local.json"))
+        for name, ip in sous_plugins(root, [user, settings, local]):
+            if guards_in(read_json_quiet(os.path.join(ip, "hooks", "hooks.json")), root, ip):
+                notes.append(f"warn plugin {name} runs the guard too, so it would run twice per Bash call; "
+                             "`sous doctor` says how to keep one")
 
     skill_copies = []
     for name in sorted(os.listdir(SKILLS_SRC)):
@@ -388,7 +525,9 @@ class Report:
 
 def doctor(root, ios, strict, mode):
     r = Report()
-    settings_path = os.path.join(root, ".claude", "settings.json")
+    claude = os.path.join(root, ".claude")
+    settings_path = os.path.join(claude, "settings.json")
+    local_path = os.path.join(claude, "settings.local.json")
     print(f"sous harness ({mode}) {root}{' (ios)' if ios else ''}{' (strict)' if strict else ''}\n")
     try:
         s, lenient = read_json(settings_path)
@@ -396,6 +535,12 @@ def doctor(root, ios, strict, mode):
         hint = "run `sous install` first" if not os.path.exists(settings_path) else "fix the file, then rerun"
         print(f"  FAIL  {e}\n\nsous: {hint}.")
         return 1 if mode == "doctor" else 0
+    local, local_lenient = {}, False
+    if os.path.isfile(local_path):
+        try:
+            local, local_lenient = read_json(local_path)
+        except SettingsError as e:
+            r.bad(f"{e} (Claude Code layers this file over settings.json)")
     ci = bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"))
     user, user_err = None, None
     if not ci and os.path.isfile(USER_SETTINGS):
@@ -403,10 +548,15 @@ def doctor(root, ios, strict, mode):
             user = read_json(USER_SETTINGS)[0]
         except SettingsError as e:
             user_err = str(e)
-    perm, sb = _dict(s.get("permissions")), _dict(s.get("sandbox"))
-    if lenient:
-        r.bad(f"{settings_path} parses only after dropping comments / trailing commas; "
-              "strict JSON readers reject it, so sous can't prove Claude Code reads it")
+    eff = overlay(s, local)
+    perm, sb = _dict(eff.get("permissions")), _dict(eff.get("sandbox"))
+    for path, flag in ((settings_path, lenient), (local_path, local_lenient)):
+        if flag:
+            r.bad(f"{path} parses only after dropping comments / trailing commas; "
+                  "strict JSON readers reject it, so sous can't prove Claude Code reads it")
+    if local:
+        r.info("settings.local.json overlays settings.json; checks below use both "
+               "(assumed: lists add up, local scalars win)")
 
     print("Layer 1 memory")
     found = [n for n in ("CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md") if os.path.isfile(os.path.join(root, n))]
@@ -424,7 +574,20 @@ def doctor(root, ios, strict, mode):
     print("Layer 3 permissions + sandbox")
     missing = [d for d in REQUIRED_DENY if d not in _rules(perm.get("deny"))]
     r.bad("deny lacks " + ", ".join(missing)) if missing else r.ok("deny rules")
-    r.ok("sandbox enabled") if sb.get("enabled") is True else r.bad("sandbox.enabled is not true")
+    if sb.get("enabled") is True:
+        r.ok("sandbox enabled")
+    else:
+        r.bad(("strict: " if strict else "") + "sandbox.enabled is not true"
+              + (" -- unattended runs would have no OS boundary" if strict else ""))
+    host_ok, host = sandbox_host()
+    if ci:
+        r.info(f"sandbox host: {host} (CI runner, not enforced)")
+    elif host_ok:
+        r.ok(f"sandbox host: {host}")
+    elif strict:
+        r.bad(f"strict: sandbox host: {host}")
+    else:
+        r.info(f"sandbox host: {host} (the sandbox can't start here)")
     if ios:
         miss = [c for c in REQUIRED_IOS_EXCLUDED if c not in _rules(sb.get("excludedCommands"))]
         r.bad("sandbox.excludedCommands lacks " + ", ".join(miss) + " (xcodebuild can't nest sandboxes)") if miss \
@@ -434,11 +597,24 @@ def doctor(root, ios, strict, mode):
             else r.bad("strict: sandbox.allowUnsandboxedCommands must be false")
     elif sb.get("allowUnsandboxedCommands") is not False:
         r.info("escape hatch open: unsandboxed retries ask first (--strict closes it for unattended runs)")
+    # The sandbox is Claude Code's runtime, not a file: only a live session
+    # proves it. `sous probe --record` notes that one did, for these settings.
+    if ci:
+        r.skip("live probe record (lives in the author's ~/.claude)")
+    else:
+        rec = _dict(_dict(read_json_quiet(PROBES_FILE).get("projects")).get(root))
+        if rec.get("fingerprint") == settings_fingerprint(eff):
+            r.ok(f"probed live {rec.get('recorded', '?')} (your record; sous can't watch a session)")
+        else:
+            why = (f"permissions or sandbox changed since the probe on {rec.get('recorded', '?')}" if rec
+                   else "sandbox never probed live")
+            msg = f"{why}: run the `sous probe` prompts in a fresh session, then `sous probe --record {root}`"
+            r.bad("strict: " + msg) if strict else r.info(msg)
     allow, ask, deny = (_rules(perm.get(k)) for k in ("allow", "ask", "deny"))
     overlap = [a for a in allow if a in ask or a in deny]
     r.bad("allow also holds " + ", ".join(overlap)) if overlap else r.ok("no allow/ask/deny overlap")
-    dups = sorted({f"{k}:{x}" for k in ("allow", "ask", "deny")
-                   for x, c in collections.Counter(_rules(perm.get(k))).items() if c > 1})
+    dups = sorted({f"{label}{k}:{x}" for label, data in (("", s), ("local ", local)) for k in ("allow", "ask", "deny")
+                   for x, c in collections.Counter(_rules(_dict(data.get("permissions")).get(k))).items() if c > 1})
     r.bad("duplicate rules " + ", ".join(dups)) if dups else r.ok("no duplicate rules")
     # Rot: a rule for a script that was deleted or renamed permits nothing and
     # hides that the real script now prompts (or worse, got a broader rule).
@@ -446,10 +622,41 @@ def doctor(root, ios, strict, mode):
     r.bad("rules name missing scripts: " + ", ".join(dead)) if dead else r.ok("no rules for missing scripts")
 
     print("Layer 4 hooks")
-    for p in hook_scripts(s, root):
+    for p in hook_scripts(eff, root):
         if not os.path.isfile(p):
             r.bad(f"PreToolUse hook points at missing {p}")
-    guard = guard_in(s, root) or (guard_in(user, root) if user else None)
+    # Every place a guard can come from. Claude Code runs each one, so two
+    # sources means every Bash call pays twice and every block logs twice.
+    sources = [(p, "project") for p in guards_in(eff, root)]
+    sources += [(p, "user settings") for p in (guards_in(user, root) if user else [])]
+    plugins = [] if ci else sous_plugins(root, [user or {}, s, local])
+    for name, ip in plugins:
+        for problem in plugin_hook_problems(ip, root):
+            r.bad(f"plugin {name}: {problem}")
+        hooks_json = read_json_quiet(os.path.join(ip, "hooks", "hooks.json"))
+        sources += [(p, f"plugin {name}") for p in guards_in(hooks_json, root, ip)]
+    seen, guards = set(), []
+    for p, where in sources:
+        if os.path.realpath(p) not in seen:
+            seen.add(os.path.realpath(p))
+            guards.append((p, where))
+    if len(guards) > 1:
+        plugin_names = [w.split(" ", 1)[1] for _, w in guards if w.startswith("plugin ")]
+        fix = ("keep one: to keep the project copy (teammates get it), add "
+               f'{{"enabledPlugins": {{"{plugin_names[0]}": false}}}} to .claude/settings.local.json '
+               "(this also turns off the plugin's SessionStart check); to keep the plugin, remove the "
+               "sous-guard entry from hooks.PreToolUse in .claude/settings.json") if plugin_names \
+            else "keep one: remove the extra PreToolUse entries"
+        r.bad(f"the guard runs {len(guards)} times per Bash call ("
+              + "; ".join(f"{w}: {p}" for p, w in guards) + f"); {fix}")
+    for p, where in guards:
+        with open(p, "rb") as f:
+            if b"\r\n" in f.read():
+                r.bad(f"{p} has CRLF line endings, which break bash; check out *.sh with eol=lf")
+        v = guard_version(p)
+        if v != SOUS_VERSION and not os.path.realpath(p).startswith(os.path.join(root, ".claude") + os.sep):
+            r.info(f"{where} guard is {('v' + v) if v else 'unstamped (before 0.3.0)'}, this sous is {SOUS_VERSION}")
+    guard = guards[0][0] if guards else None
     bash = shutil.which("bash")
     if not guard:
         r.bad("no PreToolUse hook carries the sous guard")
@@ -459,7 +666,9 @@ def doctor(root, ios, strict, mode):
         # Run the tables against the hook Claude Code will actually call, not sous's copy.
         # A pass is cached by content hash of the guard, its sourced sibling, the
         # tables and the bash/jq that run them, so doctor only pays for the 200+
-        # cases when one of them changed. CI always runs them.
+        # cases when one of them changed. CI runs them every time, since a
+        # restored CI cache is input an outsider may have shaped; the
+        # SOUS_TABLE_CACHE=on|off env overrides either default.
         sibling = os.path.join(os.path.dirname(guard), "sous-guard.sh")
         h = hashlib.sha256(f"{os.path.realpath(bash)}\0{bool(shutil.which('jq'))}\0".encode())
         for p in [guard, sibling, *HOOK_TESTS]:
@@ -468,7 +677,8 @@ def doctor(root, ios, strict, mode):
                     h.update(f.read())
         cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
                              "sous", f"tables-{h.hexdigest()[:16]}")
-        cached = None if ci else read_table_cache(cache)
+        use_cache = {"on": True, "off": False}.get(os.environ.get("SOUS_TABLE_CACHE", ""), not ci)
+        cached = read_table_cache(cache) if use_cache else None
         if cached:
             for line in cached:
                 r.ok(f"{line} (cached, unchanged)")
@@ -484,7 +694,7 @@ def doctor(root, ios, strict, mode):
                     passed.append(f"{name}: {tail}")
                 else:
                     r.bad(f"{name} on {guard}: {tail}")
-            if len(passed) == len(HOOK_TESTS) and not ci:
+            if len(passed) == len(HOOK_TESTS) and use_cache:
                 try:
                     os.makedirs(os.path.dirname(cache), exist_ok=True)
                     with open(cache, "w") as f:
@@ -494,9 +704,14 @@ def doctor(root, ios, strict, mode):
         ms = guard_latency_ms(guard, bash)
         r.ok(f"guard answers in {ms}ms (budget {GUARD_MS_BUDGET}ms)") if ms <= GUARD_MS_BUDGET \
             else r.bad(f"guard takes {ms}ms per Bash call, over {GUARD_MS_BUDGET}ms (SOUS_GUARD_MS)")
-        copied = os.path.join(root, ".claude", "hooks", "sous-guard.sh")
-        if os.path.isfile(copied) and not filecmp.cmp(HOOK_SRC, copied, shallow=False):
-            r.bad("project .claude/hooks/sous-guard.sh is stale vs sous; rerun sous install")
+    copied = os.path.join(claude, "hooks", "sous-guard.sh")
+    if os.path.isfile(copied) and not filecmp.cmp(HOOK_SRC, copied, shallow=False):
+        v = guard_version(copied)
+        if v == SOUS_VERSION:
+            r.bad("project .claude/hooks/sous-guard.sh is stale vs sous (same version, edited); rerun sous install")
+        else:
+            r.bad(f"project .claude/hooks/sous-guard.sh is {('v' + v) if v else 'unstamped (before 0.3.0)'}, "
+                  f"sous is {SOUS_VERSION}; run `sous upgrade`")
 
     print("Layer 5 gates")
     miss = [a for a in REQUIRED_ASK if a not in ask]
@@ -681,6 +896,8 @@ project (settings load at start), paste each line as a prompt, and compare.
   claude --permission-mode bypassPermissions          refused (user settings disable bypass)
 
 Any row that runs silently is a hole: fix it, then rerun sous doctor.
+When every row held, `sous probe --record DIR` notes it for these settings;
+doctor --strict asks for a fresh probe whenever permissions or sandbox change.
 """
 
 
@@ -690,7 +907,7 @@ OPTIONS = {
     "doctor": {"--ios", "--strict"},
     "status": {"--ios", "--strict"},
     "check": set(),
-    "probe": set(),
+    "probe": {"--record"},
     "report": {"--days="},
 }
 NEEDS_DIR = {"install", "doctor", "status"}
@@ -734,6 +951,10 @@ def main(argv):
     if cmd == "check":
         return check(root)
     if cmd == "probe":
+        if opts.get("--record"):
+            if not os.path.isdir(root):
+                return usage(f"no such directory: {root}")
+            return probe_record(root)
         print(PROBES.strip())
         return 0
     days = opts.get("--days", "30")
