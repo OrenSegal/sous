@@ -3,7 +3,7 @@
   "owner": {
     "name": "Oren Segal"
   },
-  "description": "Tools for checking what coding agents do: a Bash guard and zero-test check, red/green CI for skills, a re-check of cited sources, and file claims between concurrent sessions.",
+  "description": "sous: tools for checking what coding agents actually do.",
   "plugins": [
     {
       "name": "sous",

@@ -358,6 +358,23 @@ expect "docs/demo.txt is what docs/demo.sh prints" 0 sh -c 'bash "$1/docs/demo.s
 expect "README quotes docs/demo.txt verbatim" 0 python3 -c '
 import sys; r = sys.argv[1]
 assert open(r + "/docs/demo.txt").read().rstrip("\n") in open(r + "/README.md").read()' "$REPO"
+# The README toolkit table is the family list; the marketplace must agree with it.
+expect "README concept line is the marketplace description" 0 python3 -c '
+import json, sys; r = sys.argv[1]
+m = json.load(open(r + "/.claude-plugin/marketplace.json"))
+paras = open(r + "/README.md").read().split("\n\n")
+assert paras[0] == "# sous" and paras[1] == m["description"], (paras[:2], m["description"])' "$REPO"
+expect "README toolkit table lists exactly the marketplace plugins" 0 python3 -c '
+import json, re, sys; r = sys.argv[1]
+m = json.load(open(r + "/.claude-plugin/marketplace.json"))
+mk = m["name"]
+text = open(r + "/README.md").read()
+table = text.split("\n## The toolkit\n", 1)[1].split("\n## ", 1)[0]
+rows = {re.match(r"\| \[([\w-]+)\]", ln).group(1): ln for ln in table.splitlines() if re.match(r"\| \[", ln)}
+assert sorted(rows) == sorted(p["name"] for p in m["plugins"]), sorted(rows)
+for name, row in rows.items():
+    assert f"(https://github.com/OrenSegal/{name})" in row, row
+    assert f"`claude plugin install {name}@{mk}`" in row, row' "$REPO"
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

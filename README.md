@@ -1,16 +1,21 @@
 # sous
 
-A Claude Code harness you can install in one command, and a doctor that
-proves it still holds.
+sous: tools for checking what coding agents actually do.
 
-| Problem | Tool |
-|---|---|
-| An agent's Bash call deletes, force-pushes or reads a secret; a tests-green log ran zero tests; nobody checks the harness still holds | [sous](https://github.com/OrenSegal/sous) (this repo) |
-| A skill or prompt eval is green but could never have failed | [litmus](https://github.com/OrenSegal/litmus) |
-| A cited source doesn't contain the words, numbers or names the claim attributes to it | [cited](https://github.com/OrenSegal/cited) |
-| Concurrent Claude Code sessions edit the same files | [scoped](https://github.com/OrenSegal/scoped) |
+## The toolkit
 
-All four install from this repo's plugin marketplace (see [Install](#install)).
+| Plugin | What it checks | Install |
+|---|---|---|
+| [sous](https://github.com/OrenSegal/sous) | Bash calls that delete, force-push or read secrets; green test runs that ran nothing; whether the harness still holds | `claude plugin install sous@sous` |
+| [litmus](https://github.com/OrenSegal/litmus) | Skill and prompt evals that could never have failed | `claude plugin install litmus@sous` |
+| [cited](https://github.com/OrenSegal/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
+| [scoped](https://github.com/OrenSegal/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
+
+Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
+The rest of this page is about sous itself: a Claude Code harness you install
+in one command, and a doctor that proves it still holds.
+
+## The harness
 
 Agent = model + harness. The model is rented; the harness is yours. sous
 packages the harness as five layers, each backed by a file Claude Code
@@ -76,9 +81,7 @@ line to add yourself:
 { "permissions": { "disableBypassPermissionsMode": "disable" } }
 ```
 
-This repo is also a plugin marketplace. `claude plugin marketplace add
-OrenSegal/sous` lists sous, litmus, cited and scoped, and
-`claude plugin install sous@sous` installs the plugin. It carries:
+The plugin ([install line above](#the-toolkit)) carries:
 
 | Piece | What it does |
 |---|---|
@@ -214,18 +217,6 @@ Which harness for which work:
 | Interactive, on your Mac | Seatbelt sandbox + Xcode exclusions (this repo) |
 | Unattended iOS agent loops | one macOS VM per agent ([Tart](https://github.com/cirruslabs/tart)); a 16GB host fits about one |
 | Web, backend, edge functions | Docker / devcontainer; Linux-only, can't run Xcode |
-
-## Companion tools
-
-sous is the per-session seatbelt. These solve adjacent problems and compose
-with it rather than living inside it:
-
-- [scoped](https://github.com/OrenSegal/scoped): file claims between
-  concurrent sessions, enforced by its own `PreToolUse` hook.
-- [litmus](https://github.com/OrenSegal/litmus): red/green CI for skills and
-  prompts; a green only counts if it could have failed.
-- [cited](https://github.com/OrenSegal/cited):
-  checks cited claims against their source pages.
 
 ## Test
 
