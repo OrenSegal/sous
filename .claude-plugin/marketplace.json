@@ -1,24 +1,54 @@
 {
   "name": "sous",
-  "owner": { "name": "Oren Segal" },
-  "description": "Tools for checking what coding agents do: a Bash guard and zero-test check, red/green CI for skills, and a re-check of cited sources.",
+  "owner": {
+    "name": "Oren Segal"
+  },
+  "description": "Tools for checking what coding agents do: a Bash guard and zero-test check, red/green CI for skills, a re-check of cited sources, and file claims between concurrent sessions.",
   "plugins": [
     {
       "name": "sous",
       "source": "./",
-      "description": "sous-guard PreToolUse hook, the test-audit skill and tests-ran. Run `sous install` for permissions, sandbox and ask gates."
+      "description": "sous-guard PreToolUse hook, the test-audit skill and tests-ran. Run `sous install` for permissions, sandbox and ask gates.",
+      "version": "0.2.0"
     },
     {
       "name": "litmus",
-      "source": { "source": "github", "repo": "OrenSegal/litmus", "ref": "v0.1.0", "sha": "62be456c71e5e2c8d2b5f2d6ad657896e93d9867" },
+      "source": {
+        "source": "github",
+        "repo": "OrenSegal/litmus",
+        "ref": "v0.1.1",
+        "sha": "c66edbfa47d53372512f0d8a8777ee5429695cb8"
+      },
       "description": "Red/green CI for skills and prompts. A green only counts if it could have failed."
     },
     {
-      "name": "verify-before-ship",
-      "source": { "source": "github", "repo": "OrenSegal/verify-before-ship", "ref": "v0.1.0", "sha": "614e8bdb3bcd9b2489a3a7ac06a0274112f73a53" },
+      "name": "cited",
+      "source": {
+        "source": "github",
+        "repo": "OrenSegal/cited",
+        "ref": "v0.2.0",
+        "sha": "de8d76c6706099bb03c1050930633ef4d7fbbe81"
+      },
       "description": "Re-fetches every cited source and flags claims whose words, numbers or names are not on the page.",
-      "version": "0.1.0",
-      "author": { "name": "Oren Segal" },
+      "version": "0.2.0",
+      "author": {
+        "name": "Oren Segal"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "scoped",
+      "source": {
+        "source": "github",
+        "repo": "OrenSegal/scoped",
+        "ref": "v0.3.0",
+        "sha": "78c45d9f8d872354d9b63ff1d1ad463e3f9409e5"
+      },
+      "description": "File claims between concurrent Claude Code sessions, enforced by a PreToolUse hook.",
+      "version": "0.3.0",
+      "author": {
+        "name": "Oren Segal"
+      },
       "license": "MIT"
     }
   ]
