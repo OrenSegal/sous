@@ -132,6 +132,38 @@ check 0 "git commit -m 'never cat .env again'"
 check 0 'gh pr create --title "guard force push" --body "blocks git push -f and rm -rf"'
 check 2 'git commit -m "x" && rm -rf build'
 check 2 'git commit -m "x"; cat .env'
+# A message that expands is code, not data; and only git/gh messages are data.
+check 2 'git commit -m "$(rm -rf build)"'
+check 2 'git commit -m "`rm -rf build`"'
+check 2 'bash -c -m "rm -rf build"'
+check 0 'git commit -am "stop using rm -rf"'
+check 0 'git tag -a v1 -m "drop git push --force from the docs"'
+
+# --- heredoc parsing: a `<<WORD` that is not a heredoc must not hide later lines
+check 2 $'echo "<<EOF"\nrm -rf build'
+check 2 $'# <<EOF\nrm -rf build'
+check 2 $'echo $((1<<FOO))\nrm -rf build'
+check 2 $'cat <<<EOF\nrm -rf build'
+check 2 $'echo "a\n<<EOF\n"\nrm -rf build'
+check 2 $'cat <<\'END-X\'\nhi\nEND-X\nrm -rf build'
+check 2 $'cat <<A <<B\na\nA\necho "<<X"\nB\nrm -rf build'
+# ...an interpreter in any spelling still runs its heredoc...
+check 2 $'/bin/bash <<\'EOF\'\nrm -rf build\nEOF'
+check 2 $'"bash" <<\'EOF\'\nrm -rf build\nEOF'
+check 2 $'\\bash <<\'EOF\'\nrm -rf build\nEOF'
+check 2 $'"$SHELL" <<EOF\nrm -rf build\nEOF'
+check 2 $'python3.12 - <<\'EOF\'\nimport os; os.system("rm -rf build")\nEOF'
+# ...and an unquoted delimiter runs $(...) and backticks in the body.
+check 2 $'cat > notes.md <<EOF\n$(rm -rf build)\nEOF'
+check 2 $'cat > notes.md <<EOF\n`cat .env`\nEOF'
+# Claude Code's own commit and PR shapes stay data.
+check 0 $'git commit -m "$(cat <<\'EOF\'\nremove rm -rf from scripts\nEOF\n)"'
+check 0 $'gh pr create --title "x" --body "$(cat <<\'EOF\'\nblocks git push -f and cat .env\nEOF\n)"'
+check 0 $'cat <<\\EOF\nrm -rf build is bad\nEOF'
+check 0 $'cat <<-EOF\n\trm -rf is documented here\n\tEOF'
+check 0 $'cat > notes.md <<\'END-OF-NOTES\'\nnever cat .env\nEND-OF-NOTES'
+check 0 $'cat > a.md <<\'A\' && cat > b.md <<\'B\'\nrm -rf one\nA\ngit push -f two\nB'
+check 0 $'git commit -F - <<\'EOF\'\nuse `rm -rf` never, see $(docs)\nEOF'
 
 # --- input robustness: the hook must fail closed on garbage
 check_raw 2 'malformed json' '{"tool_input": {"command": "rm -rf build"'
@@ -150,6 +182,10 @@ elapsed=$(( $(date +%s) - start ))
 if [ "$elapsed" -le 5 ]; then pass=$((pass + 1)); else
   fail=$((fail + 1)); printf 'FAIL 5000-line heredoc took %ss (limit 5s)\n' "$elapsed" >&2
 fi
+# ...and so does a 20KB one-liner (bash 3.2 ${var//x/y} took ~40s on this before 0.3.0).
+long=$(printf "x%s='a'; " $(seq 1 1500))
+check 2 "python3 -c \"$long\"; rm -rf build"
+check 0 "python3 -c \"$long\""
 
 # --- KNOWN_GAP: runtime-built commands the text matcher cannot see.
 # The sandbox is the control for these. Asserted as allowed so the doc stays true.

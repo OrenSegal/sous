@@ -38,40 +38,38 @@ sous_guard() {
 }
 
 _sous_match() {
-  local cmd="$1" scan="" line trim delim="" keep=0 m norm seg first rest flags args tok
+  # C locale: bash 3.2 string ops are many times slower under UTF-8.
+  local LC_ALL=C
+  local cmd="$1" scan="" line trim m norm seg first rest flags args tok
 
   # 1. Heredoc bodies are data (a commit message naming `rm -rf`) unless the
-  #    heredoc feeds an interpreter. Text after the closing delimiter still counts.
-  #    Known limit: an unterminated `<<X` hides every later line.
-  local re_heredoc='<<-?[[:space:]]*["'\'']?([A-Za-z_][A-Za-z0-9_]*)'
-  local re_interp='(^|[;&|([:space:]])(bash|sh|zsh|dash|ksh|eval|ssh|python3?|perl|ruby|node)([[:space:]]|$|<)'
-  while IFS= read -r line || [[ -n $line ]]; do
-    if [[ -n $delim ]]; then
-      trim="${line#"${line%%[![:space:]]*}"}"
-      if [[ $trim == "$delim" ]]; then delim=""; continue; fi
-      [[ $keep == 1 ]] && scan+="$line"$'\n'
-      continue
-    fi
-    scan+="$line"$'\n'
-    if [[ $line =~ $re_heredoc ]]; then
-      delim="${BASH_REMATCH[1]}"
-      keep=0
-      [[ $line =~ $re_interp ]] && keep=1
-    fi
-  done <<< "$cmd"
+  #    heredoc feeds an interpreter, or its delimiter is unquoted and the body
+  #    holds $(...) or backticks (bash runs those). Text after the closing
+  #    delimiter still counts. Openers are found by a quote-aware scan
+  #    (_sous_heredocs), so `echo "<<X"`, `# <<X`, `$((1<<X))` and `<<<X` don't
+  #    hide later lines. Whenever that scan is unsure, nothing is hidden.
+  if [[ $cmd == *'<<'* ]] && _sous_split_heredocs "$cmd"; then
+    scan="$_sous_scan"
+  else
+    scan="$cmd"
+  fi
 
   # 2. Message arguments are data too: git commit -m "...", gh pr --body/--title.
-  local re_msg_dq='(^|[[:space:]])(-m|--message|--body|--title)[[:space:]]+"[^"]*"'
-  local re_msg_sq="(^|[[:space:]])(-m|--message|--body|--title)[[:space:]]+'[^']*'"
+  #    Only for git/gh, and only a message that can't expand ($ or backtick
+  #    inside double quotes runs code, so that text stays in the scan).
+  local sq="'" dq='"' bt='`' lf=$'\n'
+  local re_msg_pre="((^|[;&|(${lf}])[[:space:]]*(git|gh)[[:space:]]([^;&|${sq}${dq}${bt}\$]*[[:space:]])?)"
+  local re_msg_flag='(-[[:alpha:]]*m|-[bt]|--message|--body|--title|--notes)[[:space:]]+'
+  local re_msg_dq="${re_msg_pre}${re_msg_flag}${dq}[^${dq}\$${bt}\\\\]*${dq}"
+  local re_msg_sq="${re_msg_pre}${re_msg_flag}${sq}[^${sq}]*${sq}"
   while [[ $scan =~ $re_msg_dq || $scan =~ $re_msg_sq ]]; do
     m="${BASH_REMATCH[0]}"
-    scan="${scan/"$m"/ MSG}"
+    scan="${scan/"$m"/${BASH_REMATCH[1]}MSG}"
   done
 
   # 2b. A jq/yq filter is a program, not a path: in `jq '.env' f`, `.env` is a key.
   #     Blank the first positional at command position. Anything that can expand
   #     ($, backtick, <, >) or a -f filter file keeps the text, so the secrets check sees it.
-  local sq="'" dq='"' bt='`' lf=$'\n'
   local jv="([^[:space:]\$${bt}${sq}${dq}()]+|${sq}[^${sq}]*${sq}|${dq}[^${dq}\$${bt}]*${dq})"
   local jf="(${sq}[^${sq}]*${sq}|${dq}[^${dq}\$${bt}]*${dq}|[^-[:space:]${sq}${dq}|;&\$${bt}<>()][^[:space:]${sq}${dq}|;&\$${bt}<>()]*)"
   local re_jq="(^|[;&|(${bt}${lf}])[[:space:]]*(jq|yq|gojq)(([[:space:]]+(--(arg|argjson|slurpfile|rawfile)[[:space:]]+${jv}[[:space:]]+${jv}|--indent[[:space:]]+[0-9]+|-[[:alpha:]]+|--[[:alpha:]-]+))*)[[:space:]]+${jf}"
@@ -91,9 +89,15 @@ _sous_match() {
   scan="$jout$jrest"
 
   # 3. Normalize: quotes and backslashes don't change which program runs.
-  norm="${scan//\"/}"
-  norm="${norm//\'/}"
-  norm="${norm//\\/}"
+  #    Past a few KB, ${var//x/} is quadratic in bash 3.2 (tens of seconds on a
+  #    16KB command, past the hook timeout), so long text goes through tr.
+  if (( ${#scan} > 2048 )); then
+    norm=$(printf '%s' "$scan" | tr -d "\"'\\\\")
+  else
+    norm="${scan//\"/}"
+    norm="${norm//\'/}"
+    norm="${norm//\\/}"
+  fi
 
   # 4. Recursive force delete. Collect each rm's flag run, then test the flags.
   local re_rm='(^|[^[:alnum:]_./-])(/bin/|/usr/bin/)?rm(([[:space:]]+-[-[:alnum:]]*)+)'
@@ -144,9 +148,13 @@ _sous_match() {
   local re_home='(~|\$HOME|\$\{HOME\}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+)/\.(ssh|aws|gnupg)([/[:space:]]|$)'
   # Separators as quoted variables: bash 3.2 can't parse `<(` or `$(` inline here.
   local nl=$'\n' sep
-  for sep in '&&' '||' ';' '|' '&' '$(' '<(' '`'; do
-    segs="${segs//"$sep"/$nl}"
-  done
+  if (( ${#segs} > 2048 )); then
+    segs=$(printf '%s' "$segs" | awk '{ gsub(/[;|&`]|\$\(|<\(/, "\n"); print }')
+  else
+    for sep in '&&' '||' ';' '|' '&' '$(' '<(' '`'; do
+      segs="${segs//"$sep"/$nl}"
+    done
+  fi
   # Word-split each segment with globbing off, so `.env*` stays text instead of
   # expanding against the cwd (bash 3.2 has no `local -`, so restore by hand).
   local had_noglob=0
@@ -188,6 +196,133 @@ _sous_match() {
     echo "BLOCKED (sous): piping generated or downloaded text into a shell. Save it to a file, show it, then run it."
     return 1
   fi
+  return 0
+}
+
+# Sets _sous_scan to $1 minus the heredoc bodies that are data. Returns 1 when
+# the quoting is too unclear to hide anything; the caller then scans it all.
+# Quote state ($ctx, a stack: n code, s '', e $'', d "", p $( or (, b ``,
+# a arithmetic) carries across lines, so a `<<X` inside a multi-line string
+# is text, as it is to bash.
+_sous_split_heredocs() {
+  local LC_ALL=C
+  local line trim head d keep ctx="n" queue="" us=$'\037' budget=65536 hd
+  local re_interp='(^|[;&|(`[:space:]/"'\''\\])(bash|sh|zsh|dash|ksh|fish|eval|ssh|python[0-9.]*|perl|ruby|node|php|osascript|source|\$\{?SHELL\}?|\$\{?BASH\}?)([[:space:]"'\''`)]|$|<)|(^|[;&|[:space:]])\.[[:space:]]'
+  _sous_scan=""
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ -n $queue ]]; then
+      head="${queue%%"$us"*}"
+      d="${head:2}"
+      trim="${line#"${line%%[![:space:]]*}"}"
+      if [[ $trim == "$d" ]]; then queue="${queue#*"$us"}"; continue; fi
+      if [[ ${head:0:1} == 1 ]] || { [[ ${head:1:1} == U ]] && [[ $line == *'$('* || $line == *'`'* ]]; }; then
+        _sous_scan+="$line"$'\n'
+      fi
+      continue
+    fi
+    _sous_scan+="$line"$'\n'
+    # A line with none of these characters can't change the quote state or open a heredoc.
+    case $line in *[\'\"\`\(\)\<\#\\\$]*) ;; *) continue ;; esac
+    budget=$((budget - ${#line}))
+    (( budget > 0 )) || return 1
+    _sous_heredoc_line "$line" || return 1
+    [[ -z $_sous_hd ]] && continue
+    keep=0
+    [[ $line =~ $re_interp ]] && keep=1
+    while [[ -n $_sous_hd ]]; do
+      hd="${_sous_hd%%"$us"*}"
+      _sous_hd="${_sous_hd#*"$us"}"
+      queue+="$keep$hd$us"
+    done
+  done <<< "$1"
+  return 0
+}
+
+# Walks one line in quote state $ctx (the caller's), appending each heredoc it
+# opens to _sous_hd as <Q|U><delimiter>\037 (Q: quoted, body can't expand).
+# Returns 1 on a heredoc operator without a readable delimiter.
+_sous_heredoc_line() {
+  local s="$1" i=0 n=${#1} c top w q rest tmp us=$'\037'
+  local re_code='^[^'\''"`\\$()<#]+' re_dq='^[^"`\\$]+' re_sq="^[^'\\\\]+" re_ar='^[^()]+'
+  _sous_hd=""
+  while (( i < n )); do
+    top="${ctx:${#ctx}-1}"
+    c="${s:i:1}"
+    case $top in
+      s)
+        rest="${s:i}"
+        [[ $rest == *"'"* ]] || return 0
+        tmp="${rest%%"'"*}"
+        i=$((i + ${#tmp} + 1)); ctx="${ctx%?}"; continue ;;
+      e)
+        case $c in
+          \\) i=$((i + 2)) ;;
+          \') i=$((i + 1)); ctx="${ctx%?}" ;;
+          *) rest="${s:i}"; if [[ $rest =~ $re_sq ]]; then i=$((i + ${#BASH_REMATCH[0]})); else i=$((i + 1)); fi ;;
+        esac
+        continue ;;
+      a)
+        case $c in
+          \() ctx+="a"; i=$((i + 1)) ;;
+          \)) ctx="${ctx%?}"; i=$((i + 1)) ;;
+          *) rest="${s:i}"; if [[ $rest =~ $re_ar ]]; then i=$((i + ${#BASH_REMATCH[0]})); else i=$((i + 1)); fi ;;
+        esac
+        continue ;;
+      d)
+        case $c in
+          \\) i=$((i + 2)) ;;
+          \") ctx="${ctx%?}"; i=$((i + 1)) ;;
+          \`) ctx+="b"; i=$((i + 1)) ;;
+          \$)
+            if [[ ${s:i:3} == '$((' ]]; then ctx+="aa"; i=$((i + 3))
+            elif [[ ${s:i:2} == '$(' ]]; then ctx+="p"; i=$((i + 2))
+            else i=$((i + 1)); fi ;;
+          *) rest="${s:i}"; if [[ $rest =~ $re_dq ]]; then i=$((i + ${#BASH_REMATCH[0]})); else i=$((i + 1)); fi ;;
+        esac
+        continue ;;
+    esac
+    # Code: n, p, b.
+    case $c in
+      \\) i=$((i + 2)) ;;
+      \') ctx+="s"; i=$((i + 1)) ;;
+      \") ctx+="d"; i=$((i + 1)) ;;
+      \`) if [[ $top == b ]]; then ctx="${ctx%?}"; else ctx+="b"; fi; i=$((i + 1)) ;;
+      \$)
+        if [[ ${s:i:3} == '$((' ]]; then ctx+="aa"; i=$((i + 3))
+        elif [[ ${s:i:2} == '$(' ]]; then ctx+="p"; i=$((i + 2))
+        elif [[ ${s:i:2} == "\$'" ]]; then ctx+="e"; i=$((i + 2))
+        else i=$((i + 1)); fi ;;
+      \() if [[ ${s:i:2} == '((' ]]; then ctx+="aa"; i=$((i + 2)); else ctx+="p"; i=$((i + 1)); fi ;;
+      \)) [[ $top == p ]] && ctx="${ctx%?}"; i=$((i + 1)) ;;
+      \#)
+        if (( i == 0 )); then return 0; fi
+        case ${s:i-1:1} in [[:space:]]|';'|'&'|'|'|'('|')') return 0 ;; esac
+        i=$((i + 1)) ;;
+      \<)
+        if [[ ${s:i:3} == '<<<' ]]; then i=$((i + 3)); continue; fi
+        if [[ ${s:i:2} != '<<' ]]; then i=$((i + 1)); continue; fi
+        i=$((i + 2))
+        [[ ${s:i:1} == - ]] && i=$((i + 1))
+        while [[ ${s:i:1} == [[:blank:]] ]]; do i=$((i + 1)); done
+        w="" q=U
+        while (( i < n )); do
+          c="${s:i:1}"
+          case $c in
+            [[:blank:]]|';'|'&'|'|'|'<'|'>'|'('|')') break ;;
+            \\) w+="${s:i+1:1}"; q=Q; i=$((i + 2)) ;;
+            \'|\")
+              rest="${s:i+1}"
+              [[ $rest == *"$c"* ]] || return 1
+              tmp="${rest%%"$c"*}"
+              w+="$tmp"; q=Q; i=$((i + ${#tmp} + 2)) ;;
+            *) w+="$c"; i=$((i + 1)) ;;
+          esac
+        done
+        [[ -n $w ]] || return 1
+        _sous_hd+="$q$w$us" ;;
+      *) rest="${s:i}"; if [[ $rest =~ $re_code ]]; then i=$((i + ${#BASH_REMATCH[0]})); else i=$((i + 1)); fi ;;
+    esac
+  done
   return 0
 }
 
