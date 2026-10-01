@@ -13,6 +13,7 @@ Usage:
   sous install [DIR] [--ios] [--strict] [--dry-run]   merge sous into DIR/.claude (additive only)
   sous doctor  [DIR] [--ios] [--strict]               exit 1 if any layer is broken
   sous status  [DIR] [--ios] [--strict]               same checks, never fails, plus host info
+  sous check   [DIR]                                  one-line gap summary, silent when layers 3 and 5 are present
   sous probe                                          live red-team prompts for a fresh session
   sous report  [--days=N]                             what the guard blocked, and how to tune it
 
@@ -334,6 +335,35 @@ def doctor(root, ios, strict, mode):
     return 0
 
 
+def check(root):
+    """Fast path for the SessionStart hook: presence of layers 3 and 5 only.
+
+    Reads two small JSON files and runs no test tables, so it stays cheap. It
+    is silent when nothing is missing and never fails the session."""
+    try:
+        s = load(os.path.join(root, ".claude", "settings.json"))
+    except (OSError, ValueError):
+        print(f"sous: no project permissions or sandbox in {root}. Run `sous install` (a plugin can't set them).")
+        return 0
+    perm, sb = s.get("permissions", {}), s.get("sandbox", {})
+    gaps = []
+    if [d for d in REQUIRED_DENY if d not in perm.get("deny", [])]:
+        gaps.append("deny rules")
+    if sb.get("enabled") is not True:
+        gaps.append("sandbox")
+    if [a for a in REQUIRED_ASK if a not in perm.get("ask", [])]:
+        gaps.append("ask gates")
+    try:
+        user = load(USER_SETTINGS)
+    except (OSError, ValueError):
+        user = {}
+    if user.get("permissions", {}).get("disableBypassPermissionsMode") != "disable":
+        gaps.append("bypass mode still allowed in ~/.claude/settings.json")
+    if gaps:
+        print("sous: missing " + ", ".join(gaps) + ". Run `sous doctor` for detail, `sous install` to fix.")
+    return 0
+
+
 def guard_latency_ms(hook):
     """Best of three on a benign command: the tax every Bash call pays."""
     payload = json.dumps({"tool_input": {"command": "git status && ls -la src | head -5"}})
@@ -417,6 +447,8 @@ def main(argv):
         return install(root, ios, strict, "--dry-run" in flags)
     if cmd in ("doctor", "status"):
         return doctor(root, ios, strict, cmd)
+    if cmd == "check":
+        return check(root)
     if cmd == "probe":
         print(PROBES.strip())
         return 0

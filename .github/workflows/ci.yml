@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck -S warning hooks/sous-guard.sh bin/tests-ran tests/*.sh
+        run: shellcheck -S warning hooks/sous-guard.sh bin/tests-ran docs/demo.sh tests/*.sh
       - name: guard table
         run: bash tests/sous-guard.test.sh
       - name: red-team corpus
@@ -29,3 +29,10 @@ jobs:
         run: bash tests/install.test.sh
       - name: python syntax
         run: python3 -m py_compile bin/sous
+      - name: validate plugin
+        if: runner.os == 'Linux'
+        run: |
+          npm install -g @anthropic-ai/claude-code >/dev/null
+          for t in .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents; do
+            claude plugin validate "$t" --strict
+          done

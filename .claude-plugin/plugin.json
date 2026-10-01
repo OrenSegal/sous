@@ -1,6 +1,6 @@
 {
   "name": "sous",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The parts of the sous harness a plugin can carry: the sous-guard PreToolUse hook for Bash, the test-audit skill, and tests-ran for zero-test greens. Permissions, the sandbox and ask gates live in settings.json, which a plugin can't set, so run `sous install` for those.",
   "author": {
     "name": "Oren Segal"
