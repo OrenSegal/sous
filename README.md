@@ -274,8 +274,4 @@ The red-team corpus covers these bypass attempts:
 
 The OS sandbox's write scope and `denyRead` are what stop those, so keep it on.
 
-Reference install: a private iOS app repo runs the
-same guard inside its larger `bash-pretool.sh`, with `sous.sh doctor` wired
-into its tooling CI.
-
 MIT licensed.

@@ -101,7 +101,7 @@ expect "report runs" 0 python3 "$SOUS" report
 expect "report counts reasons" 0 sh -c 'python3 "$1" report | grep -q "2  force push"' _ "$SOUS"
 
 # SessionStart fast path: speaks only when a layer is missing, never fails.
-# HOME is faked so the author's real ~/.claude/settings.json is not under test.
+# HOME is faked so the real ~/.claude/settings.json is not under test.
 mkdir -p "$WORK/home/.claude"
 expect "check on a bare project speaks" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "Run `sous install`"' _ "$WORK/home" "$SOUS" "$WORK/bare"
 expect "check flags bypass mode when installed" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "bypass mode still allowed"' _ "$WORK/home" "$SOUS" "$p1"
@@ -233,7 +233,7 @@ expect "CRLF guard named" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "CRLF line
 python3 "$SOUS" install "$p6" >/dev/null
 
 # Strict: the host must be able to sandbox, and a live probe must be on record
-# for these exact settings. Outside CI only (the record is the author's).
+# for these exact settings. Outside CI only (the record lives in the user's HOME).
 expect "strict outside CI wants a probe" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" --strict | grep -q "FAIL  strict: sandbox never probed live"' _ "$WORK/home2" "$SOUS" "$p5"
 expect "non-strict only notes it" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "info  sandbox never probed live"' _ "$WORK/home2" "$SOUS" "$p5"
 expect "probe --record" 0 nonci python3 "$SOUS" probe --record "$p5"
@@ -351,6 +351,13 @@ expect "bad --days" 64 notrace python3 "$SOUS" report --days=abc
 expect "unknown command" 64 python3 "$SOUS" frobnicate
 expect "version matches plugin.json" 0 sh -c '[ "$(python3 "$1" --version)" = "sous $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"version\"])" "$2")" ]' _ "$SOUS" "$HERE/../.claude-plugin/plugin.json"
 expect "version matches the guard stamp" 0 sh -c '[ "$(python3 "$1" --version)" = "sous $(bash "$2" --version | cut -d" " -f2)" ]' _ "$SOUS" "$HERE/../hooks/sous-guard.sh"
+
+# Repo facts that live in one place and are quoted elsewhere.
+REPO="$(cd "$HERE/.." && pwd)"
+expect "docs/demo.txt is what docs/demo.sh prints" 0 sh -c 'bash "$1/docs/demo.sh" | cmp -s - "$1/docs/demo.txt"' _ "$REPO"
+expect "README quotes docs/demo.txt verbatim" 0 python3 -c '
+import sys; r = sys.argv[1]
+assert open(r + "/docs/demo.txt").read().rstrip("\n") in open(r + "/README.md").read()' "$REPO"
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

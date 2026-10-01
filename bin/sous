@@ -888,7 +888,7 @@ def doctor(root, ios, strict, mode):
     # The sandbox is Claude Code's runtime, not a file: only a live session
     # proves it. `sous probe --record` notes that one did, for these settings.
     if ci:
-        r.skip("live probe record (lives in the author's ~/.claude)")
+        r.skip("live probe record (kept in your ~/.claude, not the CI runner's)")
     else:
         rec = _dict(_dict(read_json_quiet(PROBES_FILE).get("projects")).get(root))
         if rec.get("fingerprint") == settings_fingerprint(eff):
@@ -971,7 +971,7 @@ def doctor(root, ios, strict, mode):
             for line in cached:
                 r.ok(f"{line} (cached, unchanged)")
         else:
-            env = dict(os.environ, SOUS_GUARD_HOOK=guard, BASH_PRETOOL_HOOK=guard)
+            env = dict(os.environ, SOUS_GUARD_HOOK=guard)
             passed = []
             for test in HOOK_TESTS:
                 res = subprocess.run([bash, test], env=env, capture_output=True, text=True)
@@ -1005,7 +1005,7 @@ def doctor(root, ios, strict, mode):
     miss = [a for a in REQUIRED_ASK if a not in ask]
     r.bad("ask lacks " + ", ".join(miss)) if miss else r.ok("push / commit / unsandboxed retry ask first")
     if ci:
-        r.skip("user scope (CI $HOME is not the author's)")
+        r.skip("user scope (a CI runner's $HOME is not yours)")
     elif user_err:
         r.bad(f"user settings unreadable: {user_err}")
     elif user is None:
