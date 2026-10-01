@@ -24,7 +24,8 @@ fail=0
 
 run() { # stdin payload -> exit code
   # alarm: a hook that hangs stalls every Bash call in the session, so a hang fails here.
-  (cd "$SANDBOX_DIR" && CLAUDE_TOOL_INPUT='' perl -e 'alarm 5; exec @ARGV' bash "$HOOK" >/dev/null 2>&1)
+  # $BASH: the hook runs on the bash running this file, so `/bin/bash x.test.sh` tests 3.2.
+  (cd "$SANDBOX_DIR" && CLAUDE_TOOL_INPUT='' perl -e 'alarm 5; exec @ARGV' "$BASH" "$HOOK" >/dev/null 2>&1)
 }
 check() { # $1 want, $2 command text
   local got

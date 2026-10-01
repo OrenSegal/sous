@@ -16,7 +16,7 @@ fail=0
 check() {
   local want_n="$1" want_rc="$2" label="$3" out got_n got_rc
   cat >"$WORK/log.txt"
-  out=$(bash "$TOOL" "$WORK/log.txt" 2>&1)
+  out=$("$BASH" "$TOOL" "$WORK/log.txt" 2>&1)
   got_rc=$?
   got_n=$(printf '%s\n' "$out" | sed -n 's/^tests-ran: [^0-9]*\([0-9][0-9]*\) .*/\1/p')
   if [ "$got_n" = "$want_n" ] && [ "$got_rc" = "$want_rc" ]; then
@@ -31,7 +31,7 @@ check() {
 expect() {
   local want="$1" label="$2" got
   shift 2
-  bash "$TOOL" "$@" >/dev/null 2>&1
+  "$BASH" "$TOOL" "$@" >/dev/null 2>&1
   got=$?
   if [ "$got" = "$want" ]; then pass=$((pass + 1)); else
     fail=$((fail + 1)); printf 'FAIL %s: want exit=%s got=%s\n' "$label" "$want" "$got" >&2
@@ -179,7 +179,7 @@ expect 0 'floor of 0 never fails' --min 0 /dev/null
 expect 2 'missing log does not pass' "$WORK/nope.txt"
 expect 2 'no arguments'
 expect 2 '--min without a number' --min abc "$WORK/five.txt"
-if printf '5 passed in 0.12s\n' | bash "$TOOL" - >/dev/null 2>&1; then pass=$((pass + 1)); else
+if printf '5 passed in 0.12s\n' | "$BASH" "$TOOL" - >/dev/null 2>&1; then pass=$((pass + 1)); else
   fail=$((fail + 1)); echo 'FAIL stdin via -' >&2
 fi
 

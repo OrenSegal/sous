@@ -20,7 +20,7 @@ fail=0
 check() {
   local want="$1" cmd="$2" got payload
   payload=$(jq -cn --arg c "$cmd" '{tool_input:{command:$c}}')
-  (cd "$SANDBOX_DIR" && printf '%s' "$payload" | CLAUDE_TOOL_INPUT='' perl -e 'alarm 5; exec @ARGV' bash "$HOOK" >/dev/null 2>&1)
+  (cd "$SANDBOX_DIR" && printf '%s' "$payload" | CLAUDE_TOOL_INPUT='' perl -e 'alarm 5; exec @ARGV' "$BASH" "$HOOK" >/dev/null 2>&1)
   got=$?
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1))
