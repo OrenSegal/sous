@@ -158,7 +158,7 @@ with it rather than living inside it:
   concurrent sessions, enforced by its own `PreToolUse` hook.
 - [litmus](https://github.com/OrenSegal/litmus): red/green CI for skills and
   prompts; a green only counts if it could have failed.
-- [verify-before-ship](https://github.com/OrenSegal/verify-before-ship):
+- [cited](https://github.com/OrenSegal/cited):
   checks cited claims against their source pages.
 
 ## Test
