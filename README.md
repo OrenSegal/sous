@@ -26,6 +26,30 @@ It reads XCTest, Swift Testing, pytest, Vitest and Jest output, and takes
 `--min N` for a floor. It reports the largest count it finds, not a sum, so
 treat it as a zero-detector and not a coverage number.
 
+## What it looks like
+
+Real output from `bash docs/demo.sh`, which feeds each command to the guard:
+
+```text
+$ /bin/rm -rf build
+BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user.
+  exit 2
+
+$ git -C . push -f origin main
+BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it.
+  exit 2
+
+$ sh -c 'cat .env'
+BLOCKED (sous): sh touches .env, a secrets file. Read .env.example for the key names.
+  exit 2
+
+$ git status && ls src
+  exit 0
+```
+
+Platforms: macOS and Linux. The guard is bash and the doctor is Python 3; on
+Windows use WSL.
+
 ## Install
 
 ```bash
@@ -44,10 +68,22 @@ line to add yourself:
 ```
 
 This repo is also a plugin marketplace. `claude plugin marketplace add
-OrenSegal/sous` lists sous, litmus and verify-before-ship. The sous plugin
-carries the guard hook, the skill and `tests-ran`. A plugin can't set
-permissions or the sandbox, so layers 3 and 5 still need `sous install`; with
-both, the guard runs twice, which is harmless.
+OrenSegal/sous` lists sous, litmus, cited and scoped, and
+`claude plugin install sous@sous` installs the plugin. It carries:
+
+| Piece | What it does |
+|---|---|
+| `sous-guard.sh` `PreToolUse` hook | the hard stops for Bash |
+| `SessionStart` hook | runs `sous check`, one line, silent when layers 3 and 5 are present |
+| `/sous:install` | previews, asks, then applies permissions, sandbox and ask gates |
+| `/sous:doctor`, `/sous:report` | run the doctor and the block report and explain the result |
+| `sous-reviewer` agent | turns doctor failures and false positives into the smallest change |
+| `test-audit` skill, `tests-ran` | see above |
+
+The plugin's `bin/` goes on PATH, so `sous` and `tests-ran` run as bare commands.
+A plugin can't set permissions or the sandbox, so layers 3 and 5 still need
+`/sous:install` (or `sous install`); with both, the guard runs twice, which is
+harmless.
 
 Bypass mode skips every `ask` gate, so layer 5 is only real with it off.
 `auto` mode stays available.
@@ -122,14 +158,14 @@ with it rather than living inside it:
   concurrent sessions, enforced by its own `PreToolUse` hook.
 - [litmus](https://github.com/OrenSegal/litmus): red/green CI for skills and
   prompts; a green only counts if it could have failed.
-- [verify-before-ship](https://github.com/OrenSegal/verify-before-ship):
+- [cited](https://github.com/OrenSegal/cited):
   checks cited claims against their source pages.
 
 ## Test
 
 ```bash
 bash tests/sous-guard.test.sh     # 35-case table, bash 3.2 compatible
-bash tests/adversarial.test.sh    # 78-case red-team corpus + block-log contract
+bash tests/adversarial.test.sh    # 92-case red-team corpus + block-log contract
 bash tests/install.test.sh        # install/strict/dry-run into temp projects, doctor passes
 bash tests/tests-ran.test.sh      # 35-case table: zero-test greens, skips, mixed harnesses
 ```

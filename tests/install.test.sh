@@ -99,6 +99,21 @@ printf '%s\tBLOCKED (sous): force push. Ask the user.\n' "$(date +%s)" "$(date +
 expect "report runs" 0 python3 "$SOUS" report
 expect "report counts reasons" 0 sh -c 'python3 "$1" report | grep -q "2  force push"' _ "$SOUS"
 
+# SessionStart fast path: speaks only when a layer is missing, never fails.
+# HOME is faked so the author's real ~/.claude/settings.json is not under test.
+mkdir -p "$WORK/home/.claude"
+expect "check on a bare project speaks" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "Run `sous install`"' _ "$WORK/home" "$SOUS" "$WORK/bare"
+expect "check flags bypass mode when installed" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "bypass mode still allowed"' _ "$WORK/home" "$SOUS" "$p1"
+printf '{"permissions":{"disableBypassPermissionsMode":"disable"}}\n' > "$WORK/home/.claude/settings.json"
+expect "check is silent when every layer is present" 0 sh -c '[ -z "$(HOME="$1" python3 "$2" check "$3")" ]' _ "$WORK/home" "$SOUS" "$p1"
+expect "check within 300ms" 0 python3 -c '
+import subprocess,sys,time
+t=time.monotonic(); subprocess.run(["python3",sys.argv[1],"check",sys.argv[2]],capture_output=True)
+sys.exit(0 if time.monotonic()-t<0.3 else 1)' "$SOUS" "$p1"
+expect "plugin hooks.json carries SessionStart + PreToolUse" 0 python3 -c '
+import json,sys; h=json.load(open(sys.argv[1]))["hooks"]
+assert "SessionStart" in h and "PreToolUse" in h' "$HERE/../hooks/hooks.json"
+
 # Dry run writes nothing.
 p4="$WORK/dry"; mkdir -p "$p4"
 expect "dry run" 0 python3 "$SOUS" install "$p4" --dry-run
