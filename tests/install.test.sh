@@ -315,6 +315,33 @@ expect "upgrade then uninstall" 0 python3 "$SOUS" uninstall "$u3"
 expect "upgrade dry run" 0 python3 "$SOUS" upgrade "$u3" --dry-run
 expect "uninstall takes no --strict" 64 python3 "$SOUS" uninstall "$u3" --strict
 
+# marketplace-check: shape offline; refs against a local git remote (no network).
+expect "this repo's marketplace shape" 0 python3 "$SOUS" marketplace-check --offline
+g() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c tag.gpgsign=false -C "$WORK/remote" "$@"; }
+mkdir -p "$WORK/remote" && g init -q && g commit -q --allow-empty -m one && g tag -a v1 -m v1 && g tag light
+c1=$(g rev-parse HEAD); g commit -q --allow-empty -m two; c2=$(g rev-parse HEAD); g branch -q rel
+mkt() { # $1 dir, $2 plugins JSON
+  mkdir -p "$1/.claude-plugin"; printf '{"name": "m", "owner": {"name": "o"}, "plugins": %s}\n' "$2" > "$1/.claude-plugin/marketplace.json"; }
+src() { printf '{"name": "%s", "source": {"source": "url", "url": "file://%s", "ref": "%s", "sha": "%s"}}' "$1" "$WORK/remote" "$2" "$3"; }
+mkt "$WORK/m-ok" "[$(src a v1 "$c1"), $(src b light "$c1"), $(src c rel "$c2")]"
+expect "annotated tag, lightweight tag and branch resolve" 0 python3 "$SOUS" marketplace-check "$WORK/m-ok"
+mkt "$WORK/m-moved" "[$(src a v1 "$c2")]"
+expect "a pin the tag no longer matches fails" 1 python3 "$SOUS" marketplace-check "$WORK/m-moved"
+expect "...but passes offline (shape only)" 0 python3 "$SOUS" marketplace-check "$WORK/m-moved" --offline
+mkt "$WORK/m-noref" "[$(src a v9 "$c1")]"
+expect "a missing ref fails" 1 python3 "$SOUS" marketplace-check "$WORK/m-noref"
+mkt "$WORK/m-net" '[{"name": "a", "source": {"source": "url", "url": "https://sous-check.invalid/x.git", "ref": "v1", "sha": "'"$c1"'"}}]'
+expect "an unreachable host exits 75, not 1" 75 python3 "$SOUS" marketplace-check "$WORK/m-net" --timeout=10
+mkt "$WORK/m-shape" '[{"name": "a", "source": {"source": "github", "repo": "nope", "ref": "v1", "sha": "abc"}}, {"name": "a", "source": "./x"}]'
+expect "bad repo, short sha, duplicate name, missing dir" 1 python3 "$SOUS" marketplace-check "$WORK/m-shape" --offline
+expect "each shape problem named" 0 sh -c 'out=$(python3 "$1" marketplace-check "$2" --offline); for w in "not owner/name" "appears 2 times" "has no .claude-plugin/plugin.json"; do echo "$out" | grep -q "$w" || exit 1; done' _ "$SOUS" "$WORK/m-shape"
+mkdir -p "$WORK/m-ver/p/.claude-plugin"; printf '{"name": "p", "version": "1.0.0"}\n' > "$WORK/m-ver/p/.claude-plugin/plugin.json"
+mkt "$WORK/m-ver" '[{"name": "p", "source": "./p", "version": "0.9.0"}]'
+expect "relative plugin version drift fails" 1 python3 "$SOUS" marketplace-check "$WORK/m-ver" --offline
+printf '{"name": "m", "plugins": []}\n' > "$WORK/m-ver/.claude-plugin/marketplace.json"
+expect "no owner, no plugins fails" 1 python3 "$SOUS" marketplace-check "$WORK/m-ver" --offline
+expect "bad --timeout" 64 python3 "$SOUS" marketplace-check --timeout=0
+
 # Usage errors exit 64 instead of being ignored.
 expect "unknown option" 64 python3 "$SOUS" doctor "$p1" --stirct
 expect "option for another command" 64 python3 "$SOUS" check "$p1" --dry-run

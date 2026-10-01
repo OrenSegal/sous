@@ -33,6 +33,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           npm install -g @anthropic-ai/claude-code >/dev/null
-          for t in .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents; do
+          for t in . .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents; do
             claude plugin validate "$t" --strict
           done
+
+  marketplace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shape (offline, blocking)
+        run: python3 bin/sous marketplace-check --offline
+      - name: pinned refs resolve to their shas (network failure only warns)
+        run: |
+          rc=0; python3 bin/sous marketplace-check || rc=$?
+          if [ "$rc" -eq 75 ]; then echo "::warning::marketplace-check could not reach a remote; pins not verified"; exit 0; fi
+          exit "$rc"

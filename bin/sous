@@ -676,6 +676,122 @@ def uninstall(root, dry_run):
     return 0
 
 
+# ------------------------------------------------------------ marketplace-check
+NET_ERRORS = re.compile(r"could not resolve host|timed out|failed to connect|connection (refused|reset)|"
+                        r"network is unreachable|temporary failure|ssl|tls|proxy", re.I)
+
+
+def marketplace_shape(repo):
+    """(problems, remotes) for <repo>/.claude-plugin/marketplace.json, where
+    remotes is [(plugin, url, ref, sha)] for the git-pinned plugins."""
+    path = os.path.join(repo, ".claude-plugin", "marketplace.json")
+    try:
+        data, lenient = read_json(path)
+    except SettingsError as e:
+        return [str(e)], []
+    problems = [f"{path} has comments or trailing commas"] if lenient else []
+    if not isinstance(data.get("name"), str) or not data["name"]:
+        problems.append("name is missing")
+    if not isinstance(_dict(data.get("owner")).get("name"), str):
+        problems.append("owner.name is missing")
+    plugins = data.get("plugins")
+    if not isinstance(plugins, list) or not plugins:
+        return problems + ["plugins is missing or empty"], []
+    names = [p.get("name") for p in plugins if isinstance(p, dict)]
+    problems += [f"plugin name {n!r} appears {c} times" for n, c in collections.Counter(names).items() if c > 1]
+    remotes = []
+    for i, p in enumerate(plugins):
+        if not isinstance(p, dict) or not isinstance(p.get("name"), str) or not p["name"]:
+            problems.append(f"plugins[{i}] has no name")
+            continue
+        name, src = p["name"], p.get("source")
+        if isinstance(src, str):
+            if not src.startswith("./"):
+                problems.append(f"{name}: relative source {src!r} must start with ./")
+                continue
+            pdir = os.path.normpath(os.path.join(repo, src))
+            manifest = os.path.join(pdir, ".claude-plugin", "plugin.json")
+            if not os.path.isfile(manifest):
+                problems.append(f"{name}: {src} has no .claude-plugin/plugin.json")
+                continue
+            pv = read_json_quiet(manifest).get("version")
+            if p.get("version") is not None and pv is not None and p["version"] != pv:
+                problems.append(f"{name}: marketplace says version {p['version']}, {src} plugin.json says {pv}")
+        elif isinstance(src, dict):
+            kind = src.get("source")
+            if kind == "github":
+                r = src.get("repo")
+                if not isinstance(r, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", r):
+                    problems.append(f"{name}: github repo {r!r} is not owner/name")
+                    continue
+                url = f"https://github.com/{r}.git"
+            elif kind == "url":
+                url = src.get("url")
+                if not isinstance(url, str) or not url:
+                    problems.append(f"{name}: url source has no url")
+                    continue
+            else:
+                problems.append(f"{name}: source type {kind!r} is not github or url")
+                continue
+            ref, sha = src.get("ref"), src.get("sha")
+            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                problems.append(f"{name}: sha {sha!r} is not a 40-hex commit (pin it)")
+                continue
+            if not isinstance(ref, str) or not ref:
+                problems.append(f"{name}: no ref to check the sha against")
+                continue
+            remotes.append((name, url, ref, sha))
+        else:
+            problems.append(f"{name}: source is missing")
+    return problems, remotes
+
+
+def resolve_ref(url, ref, timeout):
+    """(sha or None, error or None, network_failure)."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="true", SSH_ASKPASS="true")
+    try:
+        res = subprocess.run(["git", "ls-remote", url, f"refs/tags/{ref}", f"refs/tags/{ref}^{{}}",
+                              f"refs/heads/{ref}"], env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, f"no answer in {timeout}s", True
+    except FileNotFoundError:
+        return None, "git is not installed", True
+    if res.returncode != 0:
+        err = (res.stderr.strip().splitlines() or ["git ls-remote failed"])[-1]
+        return None, err, bool(NET_ERRORS.search(res.stderr))
+    refs = dict(reversed(line.split("\t", 1)) for line in res.stdout.splitlines() if "\t" in line)
+    for want in (f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}", f"refs/heads/{ref}"):
+        if want in refs:  # a peeled annotated tag names the commit itself
+            return refs[want], None, False
+    return None, f"ref {ref} not found", False
+
+
+def marketplace_check(repo, offline, timeout):
+    problems, remotes = marketplace_shape(repo)
+    print(f"sous marketplace-check {repo}{' (offline: shape only)' if offline else ''}")
+    for p in problems:
+        print(f"  FAIL  {p}")
+    if problems:
+        return 1
+    print("  ok    shape: names, owner, sources, pinned shas")
+    if offline:
+        return 0
+    failed = unreachable = 0
+    for name, url, ref, sha in remotes:
+        got, err, net = resolve_ref(url, ref, timeout)
+        if got == sha:
+            print(f"  ok    {name}: {ref} -> {sha[:12]}")
+        elif net:
+            unreachable += 1
+            print(f"  skip  {name}: {url} unreachable ({err})")
+        else:
+            failed += 1
+            print(f"  FAIL  {name}: " + (f"{ref} is {got[:12]}, pinned {sha[:12]}" if got else f"{url}: {err}"))
+    if failed:
+        return 1
+    return 75 if unreachable else 0
+
+
 # ---------------------------------------------------------------------- doctor
 class Report:
     def __init__(self):
@@ -1083,8 +1199,9 @@ OPTIONS = {
     "check": set(),
     "probe": {"--record"},
     "report": {"--days="},
+    "marketplace-check": {"--offline", "--timeout="},
 }
-NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status"}
+NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check"}
 
 
 def usage(msg):
@@ -1113,7 +1230,8 @@ def main(argv):
             pos.append(a)
     if len(pos) > 1:
         return usage(f"`sous {cmd}` takes at most one directory, got: {' '.join(pos)}")
-    root = os.path.realpath(os.path.expanduser(pos[0]) if pos else os.getcwd())
+    default = SOUS_ROOT if cmd == "marketplace-check" else os.getcwd()
+    root = os.path.realpath(os.path.expanduser(pos[0]) if pos else default)
     if cmd in NEEDS_DIR and not os.path.isdir(root):
         return usage(f"no such directory: {root}")
     ios = bool(opts.get("--ios")) or (os.path.isdir(root) and is_ios(root))
@@ -1133,6 +1251,11 @@ def main(argv):
             return probe_record(root)
         print(PROBES.strip())
         return 0
+    if cmd == "marketplace-check":
+        timeout = opts.get("--timeout", "20")
+        if not timeout.isdigit() or int(timeout) < 1:
+            return usage(f"--timeout wants a positive number of seconds, got {timeout!r}")
+        return marketplace_check(root, bool(opts.get("--offline")), int(timeout))
     days = opts.get("--days", "30")
     if not days.isdigit() or int(days) < 1:
         return usage(f"--days wants a positive whole number, got {days!r}")
