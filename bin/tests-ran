@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# tests-ran: fail a "green" test run that executed nothing.
+#
+# A test command can report success after running zero tests: a filter that
+# matches no suite, a test file that was never added to the target, a suite
+# where every test is skipped. xcodebuild prints "** TEST SUCCEEDED **" and
+# exits 0 for the first two. Agents hit this often, because a green status is
+# what they are asked for. This reads the log and counts what executed.
+#
+# Usage:
+#   <test command> 2>&1 | tee test.log
+#   tests-ran test.log            # exit 1 if the log shows zero executed tests
+#   tests-ran --min 40 test.log   # exit 1 below a floor you choose
+#   <test command> 2>&1 | tests-ran -
+#
+# Exit: 0 at or above the floor, 1 below it, 2 on a usage error or missing log.
+# Sourced, it only defines tests_ran_count. Runs on bash 3.2.
+#
+# Reads: XCTest ("Executed N tests"), Swift Testing ("Test run with N tests"),
+# pytest ("N passed, M failed in 0.1s"), Vitest ("Tests  N passed (N)") and
+# Jest ("Tests:  N passed, N total"). Skipped tests do not count as executed.
+
+# Prints the number of tests the log at $1 says were executed.
+tests_ran_count() {
+  # Strip ANSI colors first: Vitest and Jest color the summary line in CI.
+  sed $'s/\033\\[[0-9;]*[A-Za-z]//g' "$1" | awk '
+    function bump(n) { if (n + 0 > max) max = n + 0 }
+    # passed + failed on one summary line; skipped and deselected never ran.
+    function ran(line,    n, i, parts, total) {
+      total = 0
+      n = split(line, parts, /[^A-Za-z0-9]+/)
+      for (i = 1; i < n; i++)
+        if (parts[i] ~ /^[0-9]+$/ && parts[i + 1] ~ /^(passed|failed|xfailed|xpassed)$/)
+          total += parts[i]
+      return total
+    }
+    match($0, /Executed [0-9]+ test/) { bump(substr($0, RSTART + 9)) }
+    match($0, /Test run with [0-9]+ test/) { bump(substr($0, RSTART + 14)) }
+    /^[[:space:]]*Tests:?[[:space:]]+[0-9]/ || / in [0-9.]+s/ { bump(ran($0)) }
+    # The largest count on any line, not the sum. XCTest repeats its total once
+    # per nested suite, so a sum would count the same tests several times. That
+    # makes this a zero-detector, not a coverage number: parallel shards and
+    # mixed harnesses are undercounted, and a floor should be set with that in mind.
+    #
+    # A log with no count line at all prints 0, not "unknown". Swift Testing
+    # prints nothing when a selector matches no test, so silence is the signal.
+    END { print max + 0 }
+  '
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  set -uo pipefail
+  min=1
+  log=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --min) min="${2:-}"; shift 2 || { echo "tests-ran: --min needs a number" >&2; exit 2; } ;;
+      --min=*) min="${1#--min=}"; shift ;;
+      -h | --help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      *) log="$1"; shift ;;
+    esac
+  done
+  case "$min" in '' | *[!0-9]*) echo "tests-ran: --min needs a number, got '$min'" >&2; exit 2 ;; esac
+  [ -n "$log" ] || { echo "usage: tests-ran [--min N] <log file | ->" >&2; exit 2; }
+  [ "$log" = - ] && log=/dev/stdin
+  # A missing log must not pass: no log means nothing proved the run happened.
+  [ -r "$log" ] || { echo "tests-ran: cannot read $log" >&2; exit 2; }
+  count=$(tests_ran_count "$log") || exit 2
+  if [ "$count" -lt "$min" ]; then
+    echo "tests-ran: the log shows $count executed test(s), floor is $min. A green run that executed nothing proves nothing: check the filter, the target membership and skip markers." >&2
+    exit 1
+  fi
+  echo "tests-ran: executed $count test(s)"
+fi

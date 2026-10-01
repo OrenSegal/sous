@@ -18,6 +18,14 @@ already reads, and checks every layer on demand or in CI:
 Plus one skill: [`test-audit`](skills/test-audit/SKILL.md), which gates new
 tests on the behavior they prove and makes deletions show evidence.
 
+And one CI check: [`bin/tests-ran`](bin/tests-ran) reads a test log and exits 1
+when it shows zero executed tests. `xcodebuild` prints `** TEST SUCCEEDED **`
+and exits 0 when a filter matches nothing, and pytest, Vitest and Jest stay
+green when every test is skipped, so the status line alone can't be trusted.
+It reads XCTest, Swift Testing, pytest, Vitest and Jest output, and takes
+`--min N` for a floor. It reports the largest count it finds, not a sum, so
+treat it as a zero-detector and not a coverage number.
+
 ## Install
 
 ```bash
@@ -34,6 +42,12 @@ line to add yourself:
 ```json
 { "permissions": { "disableBypassPermissionsMode": "disable" } }
 ```
+
+This repo is also a plugin marketplace. `claude plugin marketplace add
+OrenSegal/sous` lists sous, litmus and verify-before-ship. The sous plugin
+carries the guard hook, the skill and `tests-ran`. A plugin can't set
+permissions or the sandbox, so layers 3 and 5 still need `sous install`; with
+both, the guard runs twice, which is harmless.
 
 Bypass mode skips every `ask` gate, so layer 5 is only real with it off.
 `auto` mode stays available.
@@ -117,6 +131,7 @@ with it rather than living inside it:
 bash tests/sous-guard.test.sh     # 35-case table, bash 3.2 compatible
 bash tests/adversarial.test.sh    # 78-case red-team corpus + block-log contract
 bash tests/install.test.sh        # install/strict/dry-run into temp projects, doctor passes
+bash tests/tests-ran.test.sh      # 35-case table: zero-test greens, skips, mixed harnesses
 ```
 
 `sous doctor` runs both guard suites against the hook that Claude Code will
