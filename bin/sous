@@ -10,12 +10,19 @@ Agent = model + harness. sous covers the harness in five layers:
   5 gates        ask rules on push/commit/PR, bypass mode disabled
 
 Usage:
-  sous install [DIR] [--ios] [--strict] [--dry-run]   merge sous into DIR/.claude (additive only)
-  sous doctor  [DIR] [--ios] [--strict]               exit 1 if any layer is broken
-  sous status  [DIR] [--ios] [--strict]               same checks, never fails, plus host info
-  sous check   [DIR]                                  one-line gap summary, silent when layers 3 and 5 are present
-  sous probe                                          live red-team prompts for a fresh session
-  sous report  [--days=N]                             what the guard blocked, and how to tune it
+  sous install   [DIR] [--ios] [--strict] [--dry-run]  merge sous into DIR/.claude (additive only)
+  sous upgrade   [DIR] [--ios] [--strict] [--dry-run]  same as install after updating sous: refreshes
+                                                       the guard copy, adds new defaults, removes nothing
+  sous uninstall [DIR] [--dry-run]                     remove only what install recorded adding
+  sous doctor    [DIR] [--ios] [--strict]              exit 1 if any layer is broken
+  sous status    [DIR] [--ios] [--strict]              same checks, never fails, plus host info
+  sous check     [DIR]                                 one-line gap summary, silent when layers 3 and 5 are present
+  sous probe     [--record DIR]                        live red-team prompts for a fresh session;
+                                                       --record notes that you ran them and they held
+  sous report    [--days=N]                            what the guard blocked, and how to tune it
+  sous marketplace-check [REPO] [--offline] [--timeout=S]
+                                                       verify each pinned plugin ref resolves to its sha
+  sous --version
 
 --ios adds the Xcode toolchain exclusions (xcodebuild nests its own sandbox and
 cannot run inside Claude Code's). It is auto-detected from *.xcodeproj,
@@ -24,6 +31,11 @@ cannot run inside Claude Code's). It is auto-detected from *.xcodeproj,
 --strict is for unattended runs: it closes the sandbox escape hatch
 (allowUnsandboxedCommands: false), so a blocked command fails instead of
 retrying outside the sandbox. Only excludedCommands still run unsandboxed.
+Doctor --strict also fails when the host can't run the sandbox or when it was
+never probed live for the current settings.
+
+Exit codes: 0 ok, 1 a check failed, 64 usage error, 75 marketplace-check could
+not reach the network (nothing was disproved).
 """
 import collections
 import copy
@@ -33,12 +45,14 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
+SOUS_VERSION = "0.3.0"
 SOUS_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 HOOK_SRC = os.path.join(SOUS_ROOT, "hooks", "sous-guard.sh")
 # Budgets: a memory file past this is loaded every turn and mostly skimmed; a
@@ -59,9 +73,109 @@ REQUIRED_ASK = ["Bash(git push:*)", "Bash(git commit:*)", "Bash(dangerouslyDisab
 REQUIRED_IOS_EXCLUDED = ["xcodebuild *", "xcrun *"]
 
 
+class SettingsError(Exception):
+    """A settings file sous can't read or parse; the message names the file."""
+
+
 def load(path):
+    """sous's own templates: strict JSON, shipped with sous."""
     with open(path) as f:
         return json.load(f)
+
+
+def _strip_jsonc(text):
+    """Drop // and /* */ comments and trailing commas, leaving strings alone."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            out.append(" ")
+        elif c == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j >= n or text[j] not in "}]":
+                out.append(c)
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def read_json(path):
+    """Parse a settings file. Returns (data, lenient): lenient is True when it
+    only parsed after dropping comments or trailing commas (JSONC)."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except OSError as e:
+        raise SettingsError(f"{path}: {e.strerror or e}") from None
+    except UnicodeDecodeError as e:
+        raise SettingsError(f"{path}: not UTF-8 ({e.reason})") from None
+    lenient = False
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        try:
+            data, lenient = json.loads(_strip_jsonc(text)), True
+        except ValueError:
+            raise SettingsError(f"{path}: invalid JSON, line {e.lineno} column {e.colno}: {e.msg}") from None
+    if not isinstance(data, dict):
+        raise SettingsError(f"{path}: top level is a JSON {type(data).__name__}, not an object")
+    return data, lenient
+
+
+def read_json_quiet(path):
+    """Best-effort read for files sous only inspects: {} when absent or broken."""
+    try:
+        return read_json(path)[0]
+    except SettingsError:
+        return {}
+
+
+def _dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _rules(x):
+    """A permission list, keeping only its string entries."""
+    return [i for i in x if isinstance(i, str)] if isinstance(x, list) else []
+
+
+def write_json_atomic(path, data):
+    """Write via a temp file and rename, so a crash never leaves half a file.
+    A symlinked settings file (dotfiles) is written through, not replaced."""
+    path = os.path.realpath(path)
+    fd, tmp = tempfile.mkstemp(prefix=".sous-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        if os.path.exists(path):
+            shutil.copymode(path, tmp)
+        else:
+            mask = os.umask(0)
+            os.umask(mask)
+            os.chmod(tmp, 0o666 & ~mask)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def merge(dst, src, notes, path="", force=False):
@@ -91,37 +205,103 @@ def is_ios(root):
     return any(glob.glob(os.path.join(root, p)) for p in pats)
 
 
-def hook_scripts(settings, root):
-    """Every .sh a PreToolUse hook command points at, resolved to a path."""
+def _matches_bash(matcher):
+    """Whether a PreToolUse matcher selects the Bash tool. Unparseable
+    matchers count as not matching, so doctor reports the guard missing
+    rather than assuming it runs."""
+    if matcher in (None, "", "*"):
+        return True
+    if not isinstance(matcher, str):
+        return False
+    try:
+        return re.fullmatch(matcher, "Bash") is not None
+    except re.error:
+        return False
+
+
+def _host_path(p, root):
+    """A hook path as this host sees it: Windows drive paths map to the WSL
+    mount, relative paths resolve against the project (the hook's cwd)."""
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", p)
+    if m and os.name != "nt":
+        p = "/mnt/" + m.group(1).lower() + "/" + m.group(2).replace("\\", "/")
+    p = os.path.expanduser(p)
+    return os.path.normpath(p if os.path.isabs(p) else os.path.join(root, p))
+
+
+def _expand_vars(cmd, root, plugin_root=None):
+    known = {"CLAUDE_PROJECT_DIR": root, "HOME": os.path.expanduser("~")}
+    if plugin_root:
+        known["CLAUDE_PLUGIN_ROOT"] = plugin_root
+
+    def sub(m):
+        name = m.group(1) or m.group(2) or m.group(3)
+        val = known.get(name, os.environ.get(name))
+        return m.group(0) if val is None else val
+    # ${NAME}, ${NAME:-default}, $NAME, %NAME% (cmd.exe)
+    return re.sub(r"\$\{(\w+)(?::?[-=?+][^}]*)?\}|\$(\w+)|%(\w+)%", sub, cmd)
+
+
+def hook_scripts(settings, root, plugin_root=None):
+    """Every script a Bash-matching PreToolUse hook command points at,
+    resolved to a host path: tokens ending in .sh, plus any path-like token
+    that names an existing file (a guard need not end in .sh)."""
     out = []
-    for group in settings.get("hooks", {}).get("PreToolUse", []):
-        for h in group.get("hooks", []):
-            cmd = h.get("command", "").replace('"$CLAUDE_PROJECT_DIR"', root).replace("$CLAUDE_PROJECT_DIR", root)
-            cmd = cmd.replace("${CLAUDE_PROJECT_DIR}", root)
-            for m in re.findall(r'[~\w./${}-]+\.sh', cmd):
-                out.append(os.path.expanduser(m.replace("$HOME", os.path.expanduser("~"))))
+    pre = _dict(_dict(settings).get("hooks")).get("PreToolUse")
+    for group in pre if isinstance(pre, list) else []:
+        if not isinstance(group, dict) or not _matches_bash(group.get("matcher")):
+            continue
+        hooks = group.get("hooks")
+        for h in hooks if isinstance(hooks, list) else []:
+            cmd = h.get("command") if isinstance(h, dict) else None
+            if not isinstance(cmd, str):
+                continue
+            cmd = _expand_vars(cmd, root, plugin_root)
+            if re.search(r"[A-Za-z]:\\", cmd):
+                cmd = cmd.replace("\\", "/")  # Windows path: backslashes are separators, not escapes
+            try:
+                tokens = shlex.split(cmd)
+            except ValueError:
+                tokens = cmd.split()
+            for t in tokens:
+                if t.endswith(".sh") or ("/" in t and not t.startswith("-")):
+                    p = _host_path(t, root)
+                    if t.endswith(".sh") or os.path.isfile(p):
+                        out.append(p)
+    return out
+
+
+def guards_in(settings, root, plugin_root=None):
+    """The hook scripts in settings that carry the sous guard."""
+    out = []
+    for p in hook_scripts(settings, root, plugin_root):
+        try:
+            with open(p, errors="replace") as f:
+                if GUARD_MARKER in f.read() and p not in out:
+                    out.append(p)
+        except OSError:
+            pass
     return out
 
 
 def guard_in(settings, root):
-    for p in hook_scripts(settings, root):
-        try:
-            if os.path.isfile(p) and GUARD_MARKER in open(p, errors="replace").read():
-                return p
-        except OSError:
-            pass
-    return None
+    g = guards_in(settings, root)
+    return g[0] if g else None
 
 
 # --------------------------------------------------------------------- install
 def install(root, ios, strict, dry_run):
     claude_dir = os.path.join(root, ".claude")
     settings_path = os.path.join(claude_dir, "settings.json")
-    settings = load(settings_path) if os.path.isfile(settings_path) else {}
+    try:
+        settings, lenient = read_json(settings_path) if os.path.isfile(settings_path) else ({}, False)
+    except SettingsError as e:
+        print(f"sous: {e}\n      fix it by hand; sous won't rewrite a file it can't parse.", file=sys.stderr)
+        return 1
     before = copy.deepcopy(settings)
     notes = []
 
-    user = load(USER_SETTINGS) if os.path.isfile(USER_SETTINGS) else {}
+    user = read_json_quiet(USER_SETTINGS)
     # Project scope only: a guard in ~/.claude protects this host, not teammates.
     existing_guard = guard_in(settings, root)
 
@@ -143,9 +323,9 @@ def install(root, ios, strict, dry_run):
 
     # An allow entry that also sits in ask/deny is a silent hole in intent: ask/deny
     # still win at runtime, but the allow reads like permission. Report, don't edit.
-    perm = settings.get("permissions", {})
-    for rule in perm.get("allow", []):
-        if rule in perm.get("ask", []) or rule in perm.get("deny", []):
+    perm = _dict(settings.get("permissions"))
+    for rule in _rules(perm.get("allow")):
+        if rule in _rules(perm.get("ask")) or rule in _rules(perm.get("deny")):
             notes.append(f"warn permissions.allow also holds {rule}; remove it from allow")
 
     skill_copies = []
@@ -157,25 +337,30 @@ def install(root, ios, strict, dry_run):
         else:
             notes.append(f"keep skill .claude/skills/{name} (already present)")
 
-    print(f"sous install -> {root}{' (ios)' if ios else ''}{' (strict)' if strict else ''}{' [dry run]' if dry_run else ''}")
+    tags = (" (ios)" if ios else "") + (" (strict)" if strict else "") + (" [dry run]" if dry_run else "")
+    print(f"sous install -> {root}{tags}")
     for n in notes:
         print("  " + n)
     if dry_run:
         return 0
+    if lenient and settings != before:
+        print(f"sous: {settings_path} has comments or trailing commas; rewriting it would drop them.\n"
+              "      Make it strict JSON (or apply the lines above by hand), then rerun.", file=sys.stderr)
+        return 1
 
     os.makedirs(claude_dir, exist_ok=True)
     if settings != before:
-        with open(settings_path, "w") as f:
-            json.dump(settings, f, indent=2)
-            f.write("\n")
+        write_json_atomic(settings_path, settings)
     if refresh or not existing_guard:
         os.makedirs(os.path.dirname(hook_dst), exist_ok=True)
-        shutil.copy2(HOOK_SRC, hook_dst)
-        os.chmod(hook_dst, 0o755)
+        tmp = hook_dst + ".sous-tmp"
+        shutil.copy2(HOOK_SRC, tmp)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, hook_dst)  # a session mid-call never sees half a guard
         print("  copied .claude/hooks/sous-guard.sh")
     for src, dst in skill_copies:
         shutil.copytree(src, dst)
-    if user.get("permissions", {}).get("disableBypassPermissionsMode") != "disable":
+    if _dict(user.get("permissions")).get("disableBypassPermissionsMode") != "disable":
         print('  next: add "disableBypassPermissionsMode": "disable" under permissions in ~/.claude/settings.json')
         print("        (sous never edits user scope; bypass mode skips every ask gate above)")
     print("  next: restart Claude Code (or /hooks) so the new settings load, then run: sous doctor")
@@ -206,13 +391,22 @@ def doctor(root, ios, strict, mode):
     settings_path = os.path.join(root, ".claude", "settings.json")
     print(f"sous harness ({mode}) {root}{' (ios)' if ios else ''}{' (strict)' if strict else ''}\n")
     try:
-        s = load(settings_path)
-    except (OSError, ValueError) as e:
-        print(f"  FAIL  {settings_path} unreadable: {e}\n\nsous: run `sous install` first.")
+        s, lenient = read_json(settings_path)
+    except SettingsError as e:
+        hint = "run `sous install` first" if not os.path.exists(settings_path) else "fix the file, then rerun"
+        print(f"  FAIL  {e}\n\nsous: {hint}.")
         return 1 if mode == "doctor" else 0
     ci = bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"))
-    user = load(USER_SETTINGS) if (not ci and os.path.isfile(USER_SETTINGS)) else None
-    perm, sb = s.get("permissions", {}), s.get("sandbox", {})
+    user, user_err = None, None
+    if not ci and os.path.isfile(USER_SETTINGS):
+        try:
+            user = read_json(USER_SETTINGS)[0]
+        except SettingsError as e:
+            user_err = str(e)
+    perm, sb = _dict(s.get("permissions")), _dict(s.get("sandbox"))
+    if lenient:
+        r.bad(f"{settings_path} parses only after dropping comments / trailing commas; "
+              "strict JSON readers reject it, so sous can't prove Claude Code reads it")
 
     print("Layer 1 memory")
     found = [n for n in ("CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md") if os.path.isfile(os.path.join(root, n))]
@@ -228,11 +422,11 @@ def doctor(root, ios, strict, mode):
     r.info(".mcp.json present" if os.path.isfile(os.path.join(root, ".mcp.json")) else "no project .mcp.json")
 
     print("Layer 3 permissions + sandbox")
-    missing = [d for d in REQUIRED_DENY if d not in perm.get("deny", [])]
+    missing = [d for d in REQUIRED_DENY if d not in _rules(perm.get("deny"))]
     r.bad("deny lacks " + ", ".join(missing)) if missing else r.ok("deny rules")
     r.ok("sandbox enabled") if sb.get("enabled") is True else r.bad("sandbox.enabled is not true")
     if ios:
-        miss = [c for c in REQUIRED_IOS_EXCLUDED if c not in sb.get("excludedCommands", [])]
+        miss = [c for c in REQUIRED_IOS_EXCLUDED if c not in _rules(sb.get("excludedCommands"))]
         r.bad("sandbox.excludedCommands lacks " + ", ".join(miss) + " (xcodebuild can't nest sandboxes)") if miss \
             else r.ok("Xcode toolchain excluded from sandbox")
     if strict:
@@ -240,21 +434,15 @@ def doctor(root, ios, strict, mode):
             else r.bad("strict: sandbox.allowUnsandboxedCommands must be false")
     elif sb.get("allowUnsandboxedCommands") is not False:
         r.info("escape hatch open: unsandboxed retries ask first (--strict closes it for unattended runs)")
-    overlap = [a for a in perm.get("allow", []) if a in perm.get("ask", []) or a in perm.get("deny", [])]
+    allow, ask, deny = (_rules(perm.get(k)) for k in ("allow", "ask", "deny"))
+    overlap = [a for a in allow if a in ask or a in deny]
     r.bad("allow also holds " + ", ".join(overlap)) if overlap else r.ok("no allow/ask/deny overlap")
     dups = sorted({f"{k}:{x}" for k in ("allow", "ask", "deny")
-                   for x, c in collections.Counter(perm.get(k, [])).items() if c > 1})
+                   for x, c in collections.Counter(_rules(perm.get(k))).items() if c > 1})
     r.bad("duplicate rules " + ", ".join(dups)) if dups else r.ok("no duplicate rules")
     # Rot: a rule for a script that was deleted or renamed permits nothing and
     # hides that the real script now prompts (or worse, got a broader rule).
-    dead = []
-    for k in ("allow", "ask"):
-        for rule in perm.get(k, []):
-            m = re.match(r"Bash\((\S+?)(?::\*|\s|\))", rule)
-            p = m.group(1) if m else ""
-            if "/" in p and not p.startswith(("/", "~", "$")) and not re.search(r"[*?\[]", p) \
-                    and not os.path.exists(os.path.join(root, p)):
-                dead.append(rule)
+    dead = [rule for rule in allow + ask if rule_names_missing_script(rule, root)]
     r.bad("rules name missing scripts: " + ", ".join(dead)) if dead else r.ok("no rules for missing scripts")
 
     print("Layer 4 hooks")
@@ -262,25 +450,33 @@ def doctor(root, ios, strict, mode):
         if not os.path.isfile(p):
             r.bad(f"PreToolUse hook points at missing {p}")
     guard = guard_in(s, root) or (guard_in(user, root) if user else None)
+    bash = shutil.which("bash")
     if not guard:
         r.bad("no PreToolUse hook carries the sous guard")
+    elif not bash:
+        r.bad(f"no bash on PATH, so {guard} can't run")
     else:
         # Run the tables against the hook Claude Code will actually call, not sous's copy.
-        # A pass is cached by content hash of the guard, its sourced sibling and
-        # the tables, so doctor only pays for the 100+ cases when one of them changed.
+        # A pass is cached by content hash of the guard, its sourced sibling, the
+        # tables and the bash/jq that run them, so doctor only pays for the 200+
+        # cases when one of them changed. CI always runs them.
         sibling = os.path.join(os.path.dirname(guard), "sous-guard.sh")
-        key = hashlib.sha256(b"".join(open(p, "rb").read() for p in [guard, sibling, *HOOK_TESTS]
-                                      if os.path.isfile(p))).hexdigest()[:16]
-        cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "sous", f"tables-{key}")
-        if os.path.isfile(cache):
-            with open(cache) as f:
-                for line in f.read().splitlines():
-                    r.ok(f"{line} (cached, unchanged)")
+        h = hashlib.sha256(f"{os.path.realpath(bash)}\0{bool(shutil.which('jq'))}\0".encode())
+        for p in [guard, sibling, *HOOK_TESTS]:
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    h.update(f.read())
+        cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+                             "sous", f"tables-{h.hexdigest()[:16]}")
+        cached = None if ci else read_table_cache(cache)
+        if cached:
+            for line in cached:
+                r.ok(f"{line} (cached, unchanged)")
         else:
             env = dict(os.environ, SOUS_GUARD_HOOK=guard, BASH_PRETOOL_HOOK=guard)
             passed = []
             for test in HOOK_TESTS:
-                res = subprocess.run(["bash", test], env=env, capture_output=True, text=True)
+                res = subprocess.run([bash, test], env=env, capture_output=True, text=True)
                 tail = (res.stdout.strip().splitlines() or ["no output"])[-1]
                 name = os.path.basename(test).replace(".test.sh", "")
                 if res.returncode == 0:
@@ -288,14 +484,14 @@ def doctor(root, ios, strict, mode):
                     passed.append(f"{name}: {tail}")
                 else:
                     r.bad(f"{name} on {guard}: {tail}")
-            if len(passed) == len(HOOK_TESTS):
+            if len(passed) == len(HOOK_TESTS) and not ci:
                 try:
                     os.makedirs(os.path.dirname(cache), exist_ok=True)
                     with open(cache, "w") as f:
                         f.write("\n".join(passed) + "\n")
                 except OSError:
                     pass
-        ms = guard_latency_ms(guard)
+        ms = guard_latency_ms(guard, bash)
         r.ok(f"guard answers in {ms}ms (budget {GUARD_MS_BUDGET}ms)") if ms <= GUARD_MS_BUDGET \
             else r.bad(f"guard takes {ms}ms per Bash call, over {GUARD_MS_BUDGET}ms (SOUS_GUARD_MS)")
         copied = os.path.join(root, ".claude", "hooks", "sous-guard.sh")
@@ -303,13 +499,15 @@ def doctor(root, ios, strict, mode):
             r.bad("project .claude/hooks/sous-guard.sh is stale vs sous; rerun sous install")
 
     print("Layer 5 gates")
-    miss = [a for a in REQUIRED_ASK if a not in perm.get("ask", [])]
+    miss = [a for a in REQUIRED_ASK if a not in ask]
     r.bad("ask lacks " + ", ".join(miss)) if miss else r.ok("push / commit / unsandboxed retry ask first")
     if ci:
         r.skip("user scope (CI $HOME is not the author's)")
+    elif user_err:
+        r.bad(f"user settings unreadable: {user_err}")
     elif user is None:
         r.skip(f"no {USER_SETTINGS}")
-    elif user.get("permissions", {}).get("disableBypassPermissionsMode") == "disable":
+    elif _dict(user.get("permissions")).get("disableBypassPermissionsMode") == "disable":
         r.ok("bypass mode disabled in user settings")
     else:
         r.bad('~/.claude/settings.json lacks permissions.disableBypassPermissionsMode: "disable"')
@@ -340,31 +538,84 @@ def check(root):
 
     Reads two small JSON files and runs no test tables, so it stays cheap. It
     is silent when nothing is missing and never fails the session."""
+    path = os.path.join(root, ".claude", "settings.json")
     try:
-        s = load(os.path.join(root, ".claude", "settings.json"))
-    except (OSError, ValueError):
-        print(f"sous: no project permissions or sandbox in {root}. Run `sous install` (a plugin can't set them).")
+        s = read_json(path)[0]
+    except SettingsError as e:
+        if os.path.exists(path):
+            print(f"sous: {e}. Run `sous doctor` for detail.")
+        else:
+            print(f"sous: no project permissions or sandbox in {root}. Run `sous install` (a plugin can't set them).")
         return 0
-    perm, sb = s.get("permissions", {}), s.get("sandbox", {})
+    perm, sb = _dict(s.get("permissions")), _dict(s.get("sandbox"))
     gaps = []
-    if [d for d in REQUIRED_DENY if d not in perm.get("deny", [])]:
+    if [d for d in REQUIRED_DENY if d not in _rules(perm.get("deny"))]:
         gaps.append("deny rules")
     if sb.get("enabled") is not True:
         gaps.append("sandbox")
-    if [a for a in REQUIRED_ASK if a not in perm.get("ask", [])]:
+    if [a for a in REQUIRED_ASK if a not in _rules(perm.get("ask"))]:
         gaps.append("ask gates")
-    try:
-        user = load(USER_SETTINGS)
-    except (OSError, ValueError):
-        user = {}
-    if user.get("permissions", {}).get("disableBypassPermissionsMode") != "disable":
+    user = read_json_quiet(USER_SETTINGS)
+    if _dict(user.get("permissions")).get("disableBypassPermissionsMode") != "disable":
         gaps.append("bypass mode still allowed in ~/.claude/settings.json")
     if gaps:
         print("sous: missing " + ", ".join(gaps) + ". Run `sous doctor` for detail, `sous install` to fix.")
     return 0
 
 
-def guard_latency_ms(hook):
+INTERPRETERS = {"python", "python3", "python2", "node", "bash", "sh", "zsh", "dash", "ruby", "perl",
+                "deno", "bun", "tsx", "ts-node", "php", "Rscript", "pwsh", "uv", "npx"}
+TABLE_LINE = re.compile(r"^(sous-guard|adversarial): \d+ passed, 0 failed$")
+
+
+def rule_names_missing_script(rule, root):
+    """Whether an allow/ask rule names a project script that no longer exists:
+    the program itself (./scripts/x.sh) or the script an interpreter runs
+    (python3 tools/gen.py). Absolute, home, variable, glob and URL paths are
+    not judged; $CLAUDE_PROJECT_DIR resolves to the project."""
+    m = re.match(r"^Bash\((.*)\)$", rule.strip())
+    if not m:
+        return False
+    toks = re.sub(r":\*$", "", m.group(1)).split()
+    if not toks:
+        return False
+    target, via_interp = toks[0], False
+    if os.path.basename(target) in INTERPRETERS:
+        target, via_interp = "", True
+        for t in toks[1:]:
+            if t in ("-m", "-c", "-e", "--eval", "-p", "run", "x", "exec"):
+                return False  # a module, inline code or a package runner, not a file
+            if not t.startswith("-"):
+                target = t
+                break
+    target = target.strip("\"'")
+    project_var = re.match(r"^\"?\$\{?CLAUDE_PROJECT_DIR\}?\"?/(.*)$", target)
+    if project_var:
+        target = project_var.group(1)
+    elif target.startswith(("/", "~", "$")) or "://" in target:
+        return False
+    if not target or re.search(r"[*?\[{$]", target):
+        return False
+    looks_like_file = "/" in target or (via_interp and re.search(r"\.[A-Za-z0-9]{1,5}$", target))
+    return bool(looks_like_file) and not os.path.exists(os.path.join(root, target))
+
+
+def read_table_cache(path):
+    """Cached table results, or None unless every line is a clean pass for a
+    known table: a hand-written or truncated cache file never reads as green."""
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    names = sorted(ln.split(":", 1)[0] for ln in lines)
+    want = sorted(os.path.basename(t).replace(".test.sh", "") for t in HOOK_TESTS)
+    if names != want or not all(TABLE_LINE.match(ln) for ln in lines):
+        return None
+    return lines
+
+
+def guard_latency_ms(hook, bash="bash"):
     """Best of three on a benign command: the tax every Bash call pays."""
     payload = json.dumps({"tool_input": {"command": "git status && ls -la src | head -5"}})
     env = dict(os.environ, SOUS_LOG="off", CLAUDE_TOOL_INPUT="")
@@ -372,7 +623,7 @@ def guard_latency_ms(hook):
     with tempfile.TemporaryDirectory() as d:
         for _ in range(3):
             t = time.monotonic()
-            subprocess.run(["bash", hook], input=payload, text=True, cwd=d, env=env, capture_output=True)
+            subprocess.run([bash, hook], input=payload, text=True, cwd=d, env=env, capture_output=True)
             ms = int((time.monotonic() - t) * 1000)
             best = ms if best is None else min(best, ms)
     return best
@@ -433,18 +684,51 @@ Any row that runs silently is a hole: fix it, then rerun sous doctor.
 """
 
 
+# Options each command accepts; a value-taking option is spelled --name=value.
+OPTIONS = {
+    "install": {"--ios", "--strict", "--dry-run"},
+    "doctor": {"--ios", "--strict"},
+    "status": {"--ios", "--strict"},
+    "check": set(),
+    "probe": set(),
+    "report": {"--days="},
+}
+NEEDS_DIR = {"install", "doctor", "status"}
+
+
+def usage(msg):
+    print(f"sous: {msg}\nRun `sous --help` for usage.", file=sys.stderr)
+    return 64
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
         return 0
+    if argv[0] in ("-V", "--version", "version"):
+        print(f"sous {SOUS_VERSION}")
+        return 0
     cmd, rest = argv[0], argv[1:]
-    flags = {a for a in rest if a.startswith("--")}
-    pos = [a for a in rest if not a.startswith("--")]
-    root = os.path.realpath(pos[0] if pos else os.getcwd())
-    ios = "--ios" in flags or is_ios(root)
-    strict = "--strict" in flags
+    if cmd not in OPTIONS:
+        return usage(f"unknown command {cmd}")
+    opts, pos = {}, []
+    for a in rest:
+        if a.startswith("-") and a != "-":
+            name, eq, val = a.partition("=")
+            if name + eq not in OPTIONS[cmd]:
+                return usage(f"`sous {cmd}` does not take {a}")
+            opts[name] = val if eq else True
+        else:
+            pos.append(a)
+    if len(pos) > 1:
+        return usage(f"`sous {cmd}` takes at most one directory, got: {' '.join(pos)}")
+    root = os.path.realpath(os.path.expanduser(pos[0]) if pos else os.getcwd())
+    if cmd in NEEDS_DIR and not os.path.isdir(root):
+        return usage(f"no such directory: {root}")
+    ios = bool(opts.get("--ios")) or (os.path.isdir(root) and is_ios(root))
+    strict = bool(opts.get("--strict"))
     if cmd == "install":
-        return install(root, ios, strict, "--dry-run" in flags)
+        return install(root, ios, strict, bool(opts.get("--dry-run")))
     if cmd in ("doctor", "status"):
         return doctor(root, ios, strict, cmd)
     if cmd == "check":
@@ -452,11 +736,10 @@ def main(argv):
     if cmd == "probe":
         print(PROBES.strip())
         return 0
-    if cmd == "report":
-        days = next((int(a.split("=", 1)[1]) for a in flags if a.startswith("--days=")), 30)
-        return report(days)
-    print(f"sous: unknown command {cmd}\n\n{__doc__.strip()}", file=sys.stderr)
-    return 64
+    days = opts.get("--days", "30")
+    if not days.isdigit() or int(days) < 1:
+        return usage(f"--days wants a positive whole number, got {days!r}")
+    return report(int(days))
 
 
 if __name__ == "__main__":

@@ -119,5 +119,103 @@ p4="$WORK/dry"; mkdir -p "$p4"
 expect "dry run" 0 python3 "$SOUS" install "$p4" --dry-run
 expect "dry run wrote nothing" 1 test -e "$p4/.claude"
 
+# Broken input never ends in a traceback, and never gets rewritten.
+notrace() { "$@" >"$WORK/nt.txt" 2>&1; local rc=$?; ! grep -q Traceback "$WORK/nt.txt" && return $rc; return 99; }
+p7="$WORK/broken"; mkdir -p "$p7/.claude"
+printf '{"permissions": {"deny": [}\n' > "$p7/.claude/settings.json"
+cp "$p7/.claude/settings.json" "$WORK/broken.json"
+expect "doctor on invalid JSON fails cleanly" 1 notrace python3 "$SOUS" doctor "$p7"
+expect "install on invalid JSON refuses cleanly" 1 notrace python3 "$SOUS" install "$p7"
+expect "invalid JSON left untouched" 0 cmp "$WORK/broken.json" "$p7/.claude/settings.json"
+printf '[1, 2]\n' > "$p7/.claude/settings.json"
+expect "doctor on a non-object fails cleanly" 1 notrace python3 "$SOUS" doctor "$p7"
+expect "check on invalid JSON never fails" 0 notrace python3 "$SOUS" check "$p7"
+printf '{"permissions": "nope", "sandbox": [], "hooks": {"PreToolUse": ["x", {"hooks": "y"}]}}\n' > "$p7/.claude/settings.json"
+expect "doctor on wrong-typed keys fails cleanly" 1 notrace python3 "$SOUS" doctor "$p7"
+
+# JSON with comments: read for checks, but install won't drop the comments.
+p8="$WORK/jsonc"; mkdir -p "$p8"
+python3 "$SOUS" install "$p8" >/dev/null
+python3 - "$p8/.claude/settings.json" <<'PY'
+import sys; p = sys.argv[1]; t = open(p).read()
+t = t.replace('{\n  "permissions"', '{\n  // team note: "keep // this"\n  "permissions"', 1)
+assert '"\n    ]' in t
+open(p, "w").write(t.replace('"\n    ]', '",\n    ]', 1))
+PY
+expect "doctor flags JSONC as unproven" 1 python3 "$SOUS" doctor "$p8"
+expect "doctor still reads JSONC rules" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "ok    deny rules"' _ "$SOUS" "$p8"
+cp "$p8/.claude/settings.json" "$WORK/jsonc.json"
+expect "install over JSONC with nothing to add" 0 python3 "$SOUS" install "$p8"
+python3 - "$p8/.claude/settings.json" <<'PY'
+import sys; p = sys.argv[1]; t = open(p).read()
+open(p, "w").write(t.replace('"Read(.env)",', '', 1))
+PY
+cp "$p8/.claude/settings.json" "$WORK/jsonc.json"
+expect "install refuses to rewrite JSONC" 1 python3 "$SOUS" install "$p8"
+expect "JSONC left untouched" 0 cmp "$WORK/jsonc.json" "$p8/.claude/settings.json"
+expect "dry run over JSONC still plans" 0 python3 "$SOUS" install "$p8" --dry-run
+
+# A UTF-8 BOM (Windows editors) is not an error.
+p9="$WORK/bom"; mkdir -p "$p9"
+python3 "$SOUS" install "$p9" >/dev/null
+python3 - "$p9/.claude/settings.json" <<'PY'
+import sys; p = sys.argv[1]; d = open(p, "rb").read(); open(p, "wb").write(b"\xef\xbb\xbf" + d)
+PY
+expect "doctor reads a BOM file" 0 python3 "$SOUS" doctor "$p9"
+
+# Paths: a project dir with spaces, a relative hook command, a symlinked settings file.
+p10="$WORK/with space"; mkdir -p "$p10"
+expect "install into a path with spaces" 0 python3 "$SOUS" install "$p10"
+expect "doctor on a path with spaces" 0 python3 "$SOUS" doctor "$p10"
+sethook() { python3 -c 'import json,sys
+p,cmd,matcher=sys.argv[1:]; d=json.load(open(p)); g={"hooks":[{"type":"command","command":cmd}]}
+if matcher != "-": g["matcher"]=matcher
+d["hooks"]["PreToolUse"]=[g]; json.dump(d,open(p,"w"),indent=2)' "$@"; }
+sethook "$p10/.claude/settings.json" ".claude/hooks/sous-guard.sh" Bash
+expect "relative hook command resolves" 0 python3 "$SOUS" doctor "$p10"
+sethook "$p10/.claude/settings.json" "bash \"\$CLAUDE_PROJECT_DIR/.claude/hooks/sous-guard.sh\"" "Bash|Edit"
+expect "quoted hook path with spaces resolves" 0 python3 "$SOUS" doctor "$p10"
+sethook "$p10/.claude/settings.json" '"$CLAUDE_PROJECT_DIR"/.claude/hooks/sous-guard.sh' Edit
+expect "guard behind a non-Bash matcher does not count" 1 python3 "$SOUS" doctor "$p10"
+sethook "$p10/.claude/settings.json" '"${CLAUDE_PROJECT_DIR}"/.claude/hooks/sous-guard.sh' -
+expect "matcher absent means every tool" 0 python3 "$SOUS" doctor "$p10"
+mv "$p10/.claude/settings.json" "$WORK/linked.json" && ln -s "$WORK/linked.json" "$p10/.claude/settings.json"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["permissions"]["deny"].remove("Read(.env)"); json.dump(d,open(p,"w"))' "$WORK/linked.json"
+expect "install through a symlinked settings file" 0 python3 "$SOUS" install "$p10"
+expect "symlink kept, target updated" 0 sh -c 'test -L "$1" && grep -q "Read(.env)" "$2"' _ "$p10/.claude/settings.json" "$WORK/linked.json"
+
+# Rot: a rule for a script run through an interpreter, not just a ./script.
+cp "$WORK/clean.json" "$p6/.claude/settings.json"
+addrule "$p6/.claude/settings.json" allow "Bash(python3 tools/gen.py:*)"
+expect "doctor flags interpreter rule for missing script" 1 python3 "$SOUS" doctor "$p6"
+mkdir -p "$p6/tools" && touch "$p6/tools/gen.py"
+addrule "$p6/.claude/settings.json" allow "Bash(python3 -m http.server)"
+addrule "$p6/.claude/settings.json" allow "Bash(npm run build:*)"
+addrule "$p6/.claude/settings.json" allow 'Bash("$CLAUDE_PROJECT_DIR"/scripts/gone.sh)'
+expect "module, package script and project-var rules pass" 0 python3 "$SOUS" doctor "$p6"
+
+# Table cache: only a clean pass recorded by doctor reads as green.
+mkdir -p "$WORK/home2/.claude"
+nonci() { env -u CI -u GITHUB_ACTIONS HOME="$WORK/home2" "$@"; }
+expect "doctor outside CI writes the cache" 0 nonci python3 "$SOUS" doctor "$p1"
+expect "second run uses it" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "(cached, unchanged)"' _ "$WORK/home2" "$SOUS" "$p1"
+for f in "$XDG_CACHE_HOME"/sous/tables-*; do printf 'sous-guard: trust me\nadversarial: trust me\n' > "$f"; done
+expect "forged cache is ignored" 0 sh -c '! env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "trust me"' _ "$WORK/home2" "$SOUS" "$p1"
+expect "CI never trusts the cache" 0 sh -c '! python3 "$1" doctor "$2" | grep -q "(cached"' _ "$SOUS" "$p1"
+printf '{"permissions": \n' > "$WORK/home2/.claude/settings.json"
+expect "broken user settings: clean FAIL" 1 notrace nonci python3 "$SOUS" doctor "$p1"
+expect "broken user settings named" 0 grep -q "user settings unreadable" "$WORK/nt.txt"
+rm "$WORK/home2/.claude/settings.json"
+
+# Usage errors exit 64 instead of being ignored.
+expect "unknown option" 64 python3 "$SOUS" doctor "$p1" --stirct
+expect "option for another command" 64 python3 "$SOUS" check "$p1" --dry-run
+expect "missing directory" 64 python3 "$SOUS" doctor "$WORK/nope"
+expect "two directories" 64 python3 "$SOUS" doctor "$p1" "$p2"
+expect "bad --days" 64 notrace python3 "$SOUS" report --days=abc
+expect "unknown command" 64 python3 "$SOUS" frobnicate
+expect "version matches plugin.json" 0 sh -c '[ "$(python3 "$1" --version)" = "sous $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"version\"])" "$2")" ]' _ "$SOUS" "$HERE/../.claude-plugin/plugin.json"
+expect "version matches the guard stamp" 0 sh -c '[ "$(python3 "$1" --version)" = "sous $(bash "$2" --version | cut -d" " -f2)" ]' _ "$SOUS" "$HERE/../hooks/sous-guard.sh"
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

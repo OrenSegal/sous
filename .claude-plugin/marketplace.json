@@ -9,7 +9,7 @@
       "name": "sous",
       "source": "./",
       "description": "sous-guard PreToolUse hook, the test-audit skill and tests-ran. Run `sous install` for permissions, sandbox and ask gates.",
-      "version": "0.2.0"
+      "version": "0.3.0"
     },
     {
       "name": "litmus",
