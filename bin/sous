@@ -180,26 +180,49 @@ def write_json_atomic(path, data):
         raise
 
 
-def merge(dst, src, notes, path="", force=False):
+def merge(dst, src, notes, path=(), force=False, ops=None, quiet=False):
     """Additive merge: lists gain missing items, dicts recurse, scalars only fill
-    gaps -- unless force, which the strict profile uses to tighten a scalar."""
+    gaps -- unless force, which the strict profile uses to tighten a scalar.
+
+    Each change is appended to ops (when given) so uninstall can undo exactly
+    it: "container" (sous created an empty dict/list), "item" (appended to a
+    list), "set" (filled a missing scalar), "forced" (replaced one, with was)."""
+    def record(op, here, **kw):
+        if ops is not None:
+            ops.append(dict(op=op, path=list(here), **kw))
+
     for key, val in src.items():
-        here = f"{path}.{key}" if path else key
+        here = path + (key,)
+        label = ".".join(here)
         if key not in dst:
-            dst[key] = copy.deepcopy(val)
-            notes.append(f"add {here}")
+            if not quiet:
+                notes.append(f"add {label}")
+            if isinstance(val, (dict, list)):
+                dst[key] = {} if isinstance(val, dict) else []
+                record("container", here)
+                if isinstance(val, dict):
+                    merge(dst[key], val, notes, here, force, ops, quiet=True)
+                else:
+                    for item in val:
+                        dst[key].append(copy.deepcopy(item))
+                        record("item", here, value=item)
+            else:
+                dst[key] = copy.deepcopy(val)
+                record("set", here, value=val)
         elif isinstance(val, dict) and isinstance(dst[key], dict):
-            merge(dst[key], val, notes, here, force)
+            merge(dst[key], val, notes, here, force, ops, quiet)
         elif isinstance(val, list) and isinstance(dst[key], list):
             for item in val:
                 if item not in dst[key]:
                     dst[key].append(copy.deepcopy(item))
-                    notes.append(f"add {here}: {json.dumps(item) if not isinstance(item, str) else item}")
+                    record("item", here, value=item)
+                    notes.append(f"add {label}: {json.dumps(item) if not isinstance(item, str) else item}")
         elif dst[key] != val and force:
-            notes.append(f"set {here} = {json.dumps(val)} (was {json.dumps(dst[key])})")
+            notes.append(f"set {label} = {json.dumps(val)} (was {json.dumps(dst[key])})")
+            record("forced", here, value=val, was=dst[key])
             dst[key] = copy.deepcopy(val)
         elif dst[key] != val:
-            notes.append(f"keep {here} = {json.dumps(dst[key])} (sous default is {json.dumps(val)})")
+            notes.append(f"keep {label} = {json.dumps(dst[key])} (sous default is {json.dumps(val)})")
 
 
 def is_ios(root):
@@ -421,7 +444,7 @@ def probe_record(root):
 
 
 # --------------------------------------------------------------------- install
-def install(root, ios, strict, dry_run):
+def install(root, ios, strict, dry_run, verb="install"):
     claude_dir = os.path.join(root, ".claude")
     settings_path = os.path.join(claude_dir, "settings.json")
     try:
@@ -430,7 +453,8 @@ def install(root, ios, strict, dry_run):
         print(f"sous: {e}\n      fix it by hand; sous won't rewrite a file it can't parse.", file=sys.stderr)
         return 1
     before = copy.deepcopy(settings)
-    notes = []
+    settings_created = not os.path.exists(settings_path)
+    notes, ops = [], []
 
     user = read_json_quiet(USER_SETTINGS)
     # Project scope only: a guard in ~/.claude protects this host, not teammates.
@@ -446,11 +470,12 @@ def install(root, ios, strict, dry_run):
     if existing_guard:
         template.pop("hooks", None)
         notes.append(f"keep existing guard hook {existing_guard}")
-    merge(settings, template, notes)
+    merge(settings, template, notes, ops=ops)
     if ios:
-        merge(settings, load(os.path.join(SOUS_ROOT, "templates", "settings.ios.json")), notes)
+        merge(settings, load(os.path.join(SOUS_ROOT, "templates", "settings.ios.json")), notes, ops=ops)
     if strict:
-        merge(settings, load(os.path.join(SOUS_ROOT, "templates", "settings.strict.json")), notes, force=True)
+        merge(settings, load(os.path.join(SOUS_ROOT, "templates", "settings.strict.json")), notes,
+              force=True, ops=ops)
 
     # An allow entry that also sits in ask/deny is a silent hole in intent: ask/deny
     # still win at runtime, but the allow reads like permission. Report, don't edit.
@@ -475,7 +500,7 @@ def install(root, ios, strict, dry_run):
             notes.append(f"keep skill .claude/skills/{name} (already present)")
 
     tags = (" (ios)" if ios else "") + (" (strict)" if strict else "") + (" [dry run]" if dry_run else "")
-    print(f"sous install -> {root}{tags}")
+    print(f"sous {verb} -> {root}{tags}")
     for n in notes:
         print("  " + n)
     if dry_run:
@@ -485,22 +510,169 @@ def install(root, ios, strict, dry_run):
               "      Make it strict JSON (or apply the lines above by hand), then rerun.", file=sys.stderr)
         return 1
 
-    os.makedirs(claude_dir, exist_ok=True)
+    # Everything sous adds is written to the manifest, so uninstall removes
+    # exactly that and nothing a person added before or after.
+    files, dirs = {}, []
+
+    def mkdirs(path):
+        missing = []
+        while not os.path.isdir(path):
+            missing.append(path)
+            path = os.path.dirname(path)
+        for d in reversed(missing):
+            os.mkdir(d)
+            dirs.append(_rel(root, d))
+
+    mkdirs(claude_dir)
     if settings != before:
         write_json_atomic(settings_path, settings)
     if refresh or not existing_guard:
-        os.makedirs(os.path.dirname(hook_dst), exist_ok=True)
+        mkdirs(os.path.dirname(hook_dst))
         tmp = hook_dst + ".sous-tmp"
         shutil.copy2(HOOK_SRC, tmp)
         os.chmod(tmp, 0o755)
         os.replace(tmp, hook_dst)  # a session mid-call never sees half a guard
+        files[_rel(root, hook_dst)] = _sha(hook_dst)
         print("  copied .claude/hooks/sous-guard.sh")
     for src, dst in skill_copies:
+        mkdirs(os.path.dirname(dst))
         shutil.copytree(src, dst)
+        for d, _, names in os.walk(dst):
+            dirs.append(_rel(root, d))
+            for n in names:
+                files[_rel(root, os.path.join(d, n))] = _sha(os.path.join(d, n))
+    update_manifest(claude_dir, ops, files, dirs, settings_created and settings != before)
     if _dict(user.get("permissions")).get("disableBypassPermissionsMode") != "disable":
         print('  next: add "disableBypassPermissionsMode": "disable" under permissions in ~/.claude/settings.json')
         print("        (sous never edits user scope; bypass mode skips every ask gate above)")
     print("  next: restart Claude Code (or /hooks) so the new settings load, then run: sous doctor")
+    return 0
+
+
+MANIFEST = "sous.manifest.json"
+
+
+def _rel(root, path):
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def _sha(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def update_manifest(claude_dir, ops, files, dirs, settings_created):
+    """Add this install's changes to .claude/sous.manifest.json. Rewritten
+    only when something changed, so a no-op reinstall stays a no-op."""
+    path = os.path.join(claude_dir, MANIFEST)
+    try:
+        m = read_json(path)[0] if os.path.isfile(path) else {}
+    except SettingsError as e:
+        print(f"  warn {e}; starting a new manifest (uninstall can't undo what the old one held)")
+        m = {}
+    prior = copy.deepcopy(m)
+    m["sous_manifest"] = 1
+    m["sous_version"] = SOUS_VERSION
+    m["settings_file_created"] = bool(m.get("settings_file_created")) or settings_created
+    m["dirs_created"] = list(m.get("dirs_created") or []) + [d for d in dirs if d not in (m.get("dirs_created") or [])]
+    m["files"] = dict(_dict(m.get("files")), **files)
+    m["ops"] = list(m.get("ops") or []) + ops
+    if m != prior:
+        write_json_atomic(path, m)
+
+
+def _parent(data, path):
+    """The dict holding path[-1], or None when the path is gone."""
+    for k in path[:-1]:
+        data = data.get(k) if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def uninstall(root, dry_run):
+    claude_dir = os.path.join(root, ".claude")
+    mpath = os.path.join(claude_dir, MANIFEST)
+    if not os.path.isfile(mpath):
+        print(f"sous: no .claude/{MANIFEST} in {root}, so there is no record of what sous added.\n"
+              "      Installs before 0.3.0 kept none: remove sous's entries by hand (see README), or run\n"
+              "      `sous upgrade` first; uninstall then removes only what that upgrade adds.", file=sys.stderr)
+        return 1
+    try:
+        m = read_json(mpath)[0]
+        settings_path = os.path.join(claude_dir, "settings.json")
+        settings, lenient = read_json(settings_path) if os.path.isfile(settings_path) else ({}, False)
+    except SettingsError as e:
+        print(f"sous: {e}", file=sys.stderr)
+        return 1
+    if m.get("sous_manifest") != 1:
+        print(f"sous: {mpath} is not a manifest this sous understands", file=sys.stderr)
+        return 1
+    before = copy.deepcopy(settings)
+    notes = []
+    for op in reversed(m.get("ops") or []):
+        path = tuple(_dict(op).get("path") or ())
+        parent = _parent(settings, path) if path else None
+        label = ".".join(map(str, path))
+        if parent is None or path[-1] not in parent:
+            continue
+        cur, kind, val = parent[path[-1]], op.get("op"), op.get("value")
+        if kind == "item" and isinstance(cur, list) and val in cur:
+            cur.remove(val)
+            notes.append(f"remove {label}: {val if isinstance(val, str) else json.dumps(val)}")
+        elif kind == "set":
+            if cur == val:
+                del parent[path[-1]]
+                notes.append(f"remove {label}")
+            else:
+                notes.append(f"keep {label} = {json.dumps(cur)} (changed since install)")
+        elif kind == "forced":
+            if cur == val:
+                parent[path[-1]] = copy.deepcopy(op.get("was"))
+                notes.append(f"restore {label} = {json.dumps(op.get('was'))}")
+            else:
+                notes.append(f"keep {label} = {json.dumps(cur)} (changed since install)")
+        elif kind == "container":
+            if cur in ({}, []):
+                del parent[path[-1]]
+            elif isinstance(cur, (dict, list)):
+                notes.append(f"keep {label} (holds entries sous didn't add)")
+    remove = []
+    still_used = {os.path.realpath(p) for p in hook_scripts(settings, root)}
+    for rel, sha in sorted(_dict(m.get("files")).items()):
+        p = os.path.join(root, rel)
+        if not os.path.isfile(p):
+            continue
+        if os.path.realpath(p) in still_used:
+            notes.append(f"keep {rel} (a hook you kept still runs it)")
+        elif _sha(p) == sha:
+            remove.append(p)
+            notes.append(f"remove {rel}")
+        else:
+            notes.append(f"keep {rel} (changed since install)")
+    drop_settings = settings == {} and m.get("settings_file_created") and os.path.isfile(settings_path)
+    if drop_settings:
+        notes.append("remove .claude/settings.json (sous created it; nothing else is left in it)")
+    print(f"sous uninstall -> {root}{' [dry run]' if dry_run else ''}")
+    for n in notes or ["nothing sous recorded is left to remove"]:
+        print("  " + n)
+    if dry_run:
+        return 0
+    if lenient and settings != before:
+        print(f"sous: {settings_path} has comments or trailing commas; rewriting it would drop them.\n"
+              "      Make it strict JSON (or apply the lines above by hand), then rerun.", file=sys.stderr)
+        return 1
+    if drop_settings:
+        os.unlink(settings_path)
+    elif settings != before:
+        write_json_atomic(settings_path, settings)
+    for p in remove:
+        os.unlink(p)
+    os.unlink(mpath)
+    for rel in sorted(m.get("dirs_created") or [], key=lambda d: d.count("/"), reverse=True):
+        try:
+            os.rmdir(os.path.join(root, rel))  # only succeeds when empty
+        except OSError:
+            pass
+    print("  removed .claude/sous.manifest.json")
     return 0
 
 
@@ -904,13 +1076,15 @@ doctor --strict asks for a fresh probe whenever permissions or sandbox change.
 # Options each command accepts; a value-taking option is spelled --name=value.
 OPTIONS = {
     "install": {"--ios", "--strict", "--dry-run"},
+    "upgrade": {"--ios", "--strict", "--dry-run"},
+    "uninstall": {"--dry-run"},
     "doctor": {"--ios", "--strict"},
     "status": {"--ios", "--strict"},
     "check": set(),
     "probe": {"--record"},
     "report": {"--days="},
 }
-NEEDS_DIR = {"install", "doctor", "status"}
+NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status"}
 
 
 def usage(msg):
@@ -944,8 +1118,10 @@ def main(argv):
         return usage(f"no such directory: {root}")
     ios = bool(opts.get("--ios")) or (os.path.isdir(root) and is_ios(root))
     strict = bool(opts.get("--strict"))
-    if cmd == "install":
-        return install(root, ios, strict, bool(opts.get("--dry-run")))
+    if cmd in ("install", "upgrade"):
+        return install(root, ios, strict, bool(opts.get("--dry-run")), cmd)
+    if cmd == "uninstall":
+        return uninstall(root, bool(opts.get("--dry-run")))
     if cmd in ("doctor", "status"):
         return doctor(root, ios, strict, cmd)
     if cmd == "check":

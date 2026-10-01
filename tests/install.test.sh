@@ -264,6 +264,57 @@ printf '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "\
 printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"}]}}\n' "$WORK/badplugin" > "$h3/.claude/plugins/installed_plugins.json"
 expect "plugin hooks.json pointing at a missing file is named" 0 sh -c 'env -u CI HOME="$1" python3 "$2" doctor "$3" | grep -q "plugin sous@sous: SessionStart hook points at missing"' _ "$h3" "$SOUS" "$p1"
 
+# Uninstall removes exactly what the manifest says install added.
+same_json() { python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' "$@"; }
+u1="$WORK/un-fresh"; mkdir -p "$u1"
+python3 "$SOUS" install "$u1" >/dev/null
+expect "manifest written" 0 test -f "$u1/.claude/sous.manifest.json"
+expect "uninstall a fresh install" 0 python3 "$SOUS" uninstall "$u1"
+expect "fresh project is bare again" 1 test -e "$u1/.claude"
+
+u2="$WORK/un-existing"; mkdir -p "$u2/.claude"
+printf '{"permissions": {"allow": ["Bash(npm test:*)"], "deny": ["Read(secrets/**)", "Read(.env)"]},\n "sandbox": {"enabled": false}, "model": "opus"}\n' > "$u2/.claude/settings.json"
+cp "$u2/.claude/settings.json" "$WORK/u2-orig.json"
+python3 "$SOUS" install "$u2" >/dev/null
+python3 "$SOUS" install "$u2" --strict >/dev/null
+expect "strict over base recorded the forced scalar" 0 grep -q '"forced"' "$u2/.claude/sous.manifest.json"
+cp "$u2/.claude/settings.json" "$WORK/u2-installed.json"
+cp "$u2/.claude/sous.manifest.json" "$WORK/u2-manifest.json"
+expect "uninstall dry run" 0 python3 "$SOUS" uninstall "$u2" --dry-run
+expect "dry run kept settings" 0 cmp "$WORK/u2-installed.json" "$u2/.claude/settings.json"
+expect "dry run kept the manifest" 0 cmp "$WORK/u2-manifest.json" "$u2/.claude/sous.manifest.json"
+expect "uninstall over existing settings" 0 python3 "$SOUS" uninstall "$u2"
+expect "original settings restored exactly" 0 same_json "$WORK/u2-orig.json" "$u2/.claude/settings.json"
+expect "manifest removed" 1 test -e "$u2/.claude/sous.manifest.json"
+expect "hook removed" 1 test -e "$u2/.claude/hooks/sous-guard.sh"
+expect "skill removed" 1 test -e "$u2/.claude/skills/test-audit"
+expect "user's .claude kept" 0 test -d "$u2/.claude"
+
+u3="$WORK/un-later"; mkdir -p "$u3"
+python3 "$SOUS" install "$u3" >/dev/null
+addrule "$u3/.claude/settings.json" deny "Read(secrets/**)"
+addrule "$u3/.claude/settings.json" allow "Bash(make:*)"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["model"]="opus"; d["sandbox"]["enabled"]=False; json.dump(d,open(p,"w"))' "$u3/.claude/settings.json"
+echo "# my tweak" >> "$u3/.claude/hooks/sous-guard.sh"
+echo "notes" > "$u3/.claude/skills/test-audit/MINE.md"
+expect "uninstall after user edits" 0 python3 "$SOUS" uninstall "$u3"
+expect "entries added after install survive" 0 python3 -c '
+import json,sys; d=json.load(open(sys.argv[1]))
+assert d["model"] == "opus"
+assert d["permissions"]["deny"] == ["Read(secrets/**)"], d
+assert d["permissions"]["allow"] == ["Bash(make:*)"], d
+assert d["sandbox"] == {"enabled": False}, d
+assert "hooks" not in d and "ask" not in d["permissions"], d' "$u3/.claude/settings.json"
+expect "edited hook kept" 0 test -f "$u3/.claude/hooks/sous-guard.sh"
+expect "user file in a skill dir kept" 0 test -f "$u3/.claude/skills/test-audit/MINE.md"
+expect "untouched skill file removed" 1 test -e "$u3/.claude/skills/test-audit/SKILL.md"
+
+expect "uninstall without a manifest refuses" 1 python3 "$SOUS" uninstall "$u3"
+expect "upgrade is install" 0 python3 "$SOUS" upgrade "$u3"
+expect "upgrade then uninstall" 0 python3 "$SOUS" uninstall "$u3"
+expect "upgrade dry run" 0 python3 "$SOUS" upgrade "$u3" --dry-run
+expect "uninstall takes no --strict" 64 python3 "$SOUS" uninstall "$u3" --strict
+
 # Usage errors exit 64 instead of being ignored.
 expect "unknown option" 64 python3 "$SOUS" doctor "$p1" --stirct
 expect "option for another command" 64 python3 "$SOUS" check "$p1" --dry-run
