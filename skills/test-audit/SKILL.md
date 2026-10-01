@@ -80,6 +80,16 @@ Projects with a wrapper (e.g. `build-ios.sh services <Suite>`) should use it
 and still check the count: set it in the project's CLAUDE.md so this step
 points at the real command.
 
+sous ships the same check as a script, for CI and for wrappers:
+
+```bash
+<test command> 2>&1 | tee test.log
+~/.sous/bin/tests-ran test.log           # exit 1 if zero tests executed
+~/.sous/bin/tests-ran --min 40 test.log  # or below a floor you set
+```
+
+It reads the five formats above and counts skipped tests as not executed.
+
 ## Output
 
 ```

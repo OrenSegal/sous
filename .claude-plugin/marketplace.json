@@ -1,0 +1,25 @@
+{
+  "name": "sous",
+  "owner": { "name": "Oren Segal" },
+  "description": "Tools for checking what coding agents do: a Bash guard and zero-test check, red/green CI for skills, and a re-check of cited sources.",
+  "plugins": [
+    {
+      "name": "sous",
+      "source": "./",
+      "description": "sous-guard PreToolUse hook, the test-audit skill and tests-ran. Run `sous install` for permissions, sandbox and ask gates."
+    },
+    {
+      "name": "litmus",
+      "source": { "source": "github", "repo": "OrenSegal/litmus", "ref": "v0.1.0", "sha": "62be456c71e5e2c8d2b5f2d6ad657896e93d9867" },
+      "description": "Red/green CI for skills and prompts. A green only counts if it could have failed."
+    },
+    {
+      "name": "verify-before-ship",
+      "source": { "source": "github", "repo": "OrenSegal/verify-before-ship", "ref": "v0.1.0", "sha": "614e8bdb3bcd9b2489a3a7ac06a0274112f73a53" },
+      "description": "Re-fetches every cited source and flags claims whose words, numbers or names are not on the page.",
+      "version": "0.1.0",
+      "author": { "name": "Oren Segal" },
+      "license": "MIT"
+    }
+  ]
+}
