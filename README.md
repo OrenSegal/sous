@@ -166,8 +166,8 @@ lists add up and local scalars win; that's how it appears to behave, but sous
 can't confirm it from Claude Code's docs, so the doctor says so when a local
 file is present.
 
-Doctor caches passing table results by content hash of the guard, the tables,
-and the bash and jq that run them, so it reruns the 250+ cases only after one
+Doctor caches passing table results by content hash of the guard and the tables,
+keyed also on the bash that runs them and whether jq is present, so it reruns the 250+ cases only after one
 of those changes. CI never uses the cache unless `SOUS_TABLE_CACHE=on`.
 
 The guard appends every block to `~/.claude/sous/blocks.tsv` as a timestamp and
