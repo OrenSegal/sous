@@ -3,13 +3,18 @@
 #
 # Hard-stops agent slips that settings.json Bash deny rules miss, because deny
 # rules match the command text Claude usually writes, not the program:
-#   delete   rm with recursive+force (any spelling), git clean -f, find -delete,
-#            rsync --delete
-#   push     --force*, -f, +ref, --mirror, --delete, -d, :ref
-#   secrets  any command naming .env* (bar .example/.sample/.template/.dist),
-#            ~/.ssh, ~/.aws, ~/.gnupg -- except ls / git / test / stat
-#   build    decode or fetch piped into a shell, bash <(curl ...), eval of a
-#            decoded or fetched string
+#   delete   rm with recursive+force (any spelling or path, $'\x..', ${IFS},
+#            line continuations), rimraf, git clean -f, find -delete,
+#            rsync --delete, rmtree/rm_rf/rmSync-recursive under an interpreter
+#   push     --force*, -f, +ref, --mirror, --delete, -d, --prune, :ref, and
+#            the same behind -c alias/remote.*.mirror, for every push in the line
+#   secrets  any command naming .env* (bar .example/.sample/.template/.dist, any
+#            case) or a dot-glob reaching it, ~/.ssh, ~/.aws, ~/.gnupg (any
+#            user's home) -- except ls / test / stat, and git short of
+#            show/cat-file/diff/grep/log -p/-c that print contents
+#   build    decode or fetch piped into a shell (through sudo/env/VAR=) or an
+#            interpreter reading stdin, sh -c "$(curl ...)", bash <(curl ...),
+#            <<< "$(curl ...)", eval of a decoded or fetched string
 #
 # Two ways to use it:
 #   executed  reads the hook JSON on stdin; exit 2 blocks, stderr goes to the model
@@ -20,6 +25,10 @@
 # network allowlist) is the boundary; this catches the agent's own slips and the
 # common injection shapes early, with a message that says what to do instead.
 # Red-team corpus and known gaps: tests/adversarial.test.sh. Runs on bash 3.2.
+
+# `sous doctor` compares this stamp between the plugin's guard and a project's
+# copy to report drift; `sous-guard.sh --version` prints it.
+SOUS_GUARD_VERSION=0.3.0
 
 # Prints the block reason and returns 1 when $1 must not run; returns 0 otherwise.
 # Every block appends "epoch<TAB>reason" to $SOUS_LOG (default
@@ -88,9 +97,25 @@ _sous_match() {
   done
   scan="$jout$jrest"
 
-  # 3. Normalize: quotes and backslashes don't change which program runs.
-  #    Past a few KB, ${var//x/} is quadratic in bash 3.2 (tens of seconds on a
-  #    16KB command, past the hook timeout), so long text goes through tr.
+  # 2c. Spellings bash undoes before running. Done after the message and jq
+  #     steps, so decoded text can't open or close a span those steps hide.
+  #     $'\x72\x6d' is "rm" (decoded in place), and backslash-newline joins
+  #     lines (the joined text is appended, so a stray join hides nothing).
+  local re_ansi='\$'"'"'(([^'"'"'\\]|\\.)*)'"'"'' dec n=0
+  while (( n < 32 )) && [[ $scan =~ $re_ansi ]]; do
+    m="${BASH_REMATCH[0]}"
+    printf -v dec '%b' "${BASH_REMATCH[1]}"
+    scan="${scan/"$m"/$dec}"
+    n=$((n + 1))
+  done
+  if [[ $scan == *\\"$lf"* ]]; then
+    scan+="$lf$(printf '%s\n' "$scan" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }')"
+  fi
+
+  # 3. Normalize: quotes and backslashes don't change which program runs, and
+  #    ${IFS} is a space. Past a few KB, ${var//x/} is quadratic in bash 3.2
+  #    (tens of seconds on a 16KB command, past the hook timeout), so long text
+  #    goes through tr.
   if (( ${#scan} > 2048 )); then
     norm=$(printf '%s' "$scan" | tr -d "\"'\\\\")
   else
@@ -98,12 +123,20 @@ _sous_match() {
     norm="${norm//\'/}"
     norm="${norm//\\/}"
   fi
+  local re_ifs='\$\{IFS[^}]*\}|\$IFS'
+  n=0
+  while (( n < 32 )) && [[ $norm =~ $re_ifs ]]; do
+    norm="${norm/"${BASH_REMATCH[0]}"/ }"
+    n=$((n + 1))
+  done
 
   # 4. Recursive force delete. Collect each rm's flag run, then test the flags.
-  local re_rm='(^|[^[:alnum:]_./-])(/bin/|/usr/bin/)?rm(([[:space:]]+-[-[:alnum:]]*)+)'
+  #    Any path to rm (or GNU grm), and commas count as separators so brace
+  #    expansion ({rm,-rf,x}) and argv lists ([rm, -rf, x]) are read as flags.
+  local re_rm='(^|[^[:alnum:]_./-])([^[:space:];&|(){}<>]*/)?g?rm(([[:space:],]+-[-[:alnum:]]*)+)'
   rest="$norm"
   while [[ $rest =~ $re_rm ]]; do
-    flags=" ${BASH_REMATCH[3]} "
+    flags=" ${BASH_REMATCH[3]//,/ } "
     rest="${rest#*"${BASH_REMATCH[0]}"}"
     if [[ $flags =~ [[:space:]](-[[:alpha:]]*[rR]|--recursive)[[:space:]] ]] &&
        [[ $flags =~ [[:space:]](-[[:alpha:]]*f[[:alpha:]]*|--force)[[:space:]] ]] ||
@@ -112,14 +145,22 @@ _sous_match() {
       return 1
     fi
   done
+  # rimraf is rm -rf as a package: run directly or through npx/pnpm dlx/yarn dlx/bunx.
+  local re_rimraf="(^|[;&|(${bt}${lf}])[[:space:]]*((sudo|env|command|exec)[[:space:]]+)*((npx|bunx|pnpx)([[:space:]]+-[^[:space:]]*)*[[:space:]]+|(pnpm|yarn|bun)[[:space:]]+(dlx|x)[[:space:]]+|npm[[:space:]]+exec([[:space:]]+--)?[[:space:]]+)?([^[:space:]]*/)?rimraf(@[^[:space:]]*)?([[:space:]]|\$)"
+  if [[ $norm =~ $re_rimraf ]]; then
+    echo "BLOCKED (sous): rimraf is a recursive force delete. Name the files, list them first, or ask the user."
+    return 1
+  fi
   local re_clean='git[[:space:]]+([^|;&]*[[:space:]])?clean(([[:space:]]+-[-[:alnum:]]*)+)'
-  if [[ $norm =~ $re_clean ]]; then
+  rest="$norm"
+  while [[ $rest =~ $re_clean ]]; do
     flags=" ${BASH_REMATCH[2]} "
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
     if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--force) && ! $flags =~ [[:space:]](-[[:alpha:]]*n|--dry-run) ]]; then
       echo "BLOCKED (sous): git clean deletes untracked work. Run git clean -n and show the user the list."
       return 1
     fi
-  fi
+  done
   if [[ $norm =~ (^|[^[:alnum:]_])find[[:space:]][^|\;\&]*-delete ]]; then
     echo "BLOCKED (sous): find -delete. Run the same find with -print, then delete named paths."
     return 1
@@ -129,23 +170,34 @@ _sous_match() {
     return 1
   fi
 
-  # 5. Destructive push: force, mirror, remote-branch delete.
-  local re_push='git[[:space:]]+([^|;&]*[[:space:]])?push([[:space:]]+[^|;&[:space:]]+)*'
-  if [[ $norm =~ $re_push ]]; then
-    args=" ${BASH_REMATCH[0]#*push} "
-    if [[ $args =~ [[:space:]](--force|--mirror|--delete) ]] ||
+  # 5. Destructive push: force, mirror, prune, remote-branch delete. Every push
+  #    in the command, including one behind an alias or -c remote.*.mirror.
+  local re_push='git[[:space:]]+([^|;&]*[[:space:]=])?push(([[:space:]]+[^|;&[:space:]]+)*)'
+  local pre
+  rest="$norm"
+  while [[ $rest =~ $re_push ]]; do
+    pre=" ${BASH_REMATCH[1]} "
+    args=" ${BASH_REMATCH[2]} "
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+    if [[ $args =~ [[:space:]](--force|--mirror|--delete|--prune) ]] ||
        [[ $args =~ [[:space:]]-[[:alpha:]]*[fd][[:alpha:]]*[[:space:]] ]] ||
-       [[ $args =~ [[:space:]][+:][^[:space:]] ]]; then
+       [[ $args =~ [[:space:]][+:][^[:space:]] ]] ||
+       [[ $pre =~ mirror=([tT]|1|[yY]|[oO][nN])|\.push=[+:] ]]; then
       echo "BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it."
       return 1
     fi
-  fi
+  done
 
   # 6. Secrets: per command segment, any mention of a secrets path, unless the
-  #    segment's program only lists or stats it.
+  #    segment's program only lists or stats it. Case-insensitive (macOS and
+  #    Windows filesystems are), and globs are tested against the real names.
   local segs="$norm" allow_re='^(ls|git|test|\[|stat)$'
-  local re_env='(^|[^[:alnum:]_])(\.en[v?*][[:alnum:]_.*?-]*)'
-  local re_home='(~|\$HOME|\$\{HOME\}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+)/\.(ssh|aws|gnupg)([/[:space:]]|$)'
+  local re_env='(^|[^[:alnum:]_])(\.[eE][nN][vV?*][[:alnum:]_.*?-]*)'
+  local re_home='(~[[:alnum:]_.-]*|\$HOME|\$\{HOME\}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+|/root|/var/root)/(\.[^/[:space:]]+)'
+  local re_interp_cmd='(^|[;&|(`[:space:]/])(python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
+  local re_api='(^|[^[:alnum:]_])(rmtree|remove_tree|rm_rf|rm_r|remove_dir|remove_entry_secure|RemoveAll)([[:space:]]*\(|[[:space:]]+[^[:space:]=])|\.(rmSync|rmdirSync|rm|rmdir)\([^)]*recursive'
+  local has_interp=0 low comp cand gsub skip
+  [[ $norm =~ $re_interp_cmd ]] && has_interp=1
   # Separators as quoted variables: bash 3.2 can't parse `<(` or `$(` inline here.
   local nl=$'\n' sep
   if (( ${#segs} > 2048 )); then
@@ -168,31 +220,95 @@ _sous_match() {
       esac
       first="$tok"; break
     done
-    [[ -z $first || $first =~ $allow_re ]] && continue
-    if [[ $seg =~ $re_home ]]; then
-      echo "BLOCKED (sous): reading ~/.${BASH_REMATCH[2]} credentials. Ask the user."
-      [ $had_noglob = 1 ] || set +f
-      return 1
+    [[ -z $first ]] && continue
+    # git is allowlisted for status/add/rm/log, not for the subcommands that
+    # print a file's contents (show HEAD:.env) or run a configured program (-c).
+    if [[ $first == git ]]; then
+      gsub="" skip=0 n=0
+      for tok in $seg; do
+        if (( n == 0 )); then [[ $tok == git ]] && n=1; continue; fi
+        if (( skip )); then skip=0; continue; fi
+        case $tok in
+          -C|--git-dir|--work-tree|--namespace) skip=1 ;;
+          -c|-c*|--config-env*|--exec-path*) gsub=-c; break ;;
+          -*) ;;
+          *) gsub=$tok; break ;;
+        esac
+      done
+      case $gsub in
+        -c|show|cat-file|blame|annotate|grep|diff|difftool|archive|format-patch|whatchanged) first="git $gsub" ;;
+        log) [[ $seg =~ [[:space:]](-p|--patch|-L[^[:space:]]*|-u)([[:space:]]|$) ]] && first="git log -p" ;;
+      esac
     fi
+    if (( has_interp )) && [[ $seg =~ $re_api ]]; then
+      case $first in
+        grep|egrep|fgrep|rg|ag|ack|git|echo|printf|sed|awk|cat|less|head|tail|wc|ls|find) ;;
+        *)
+          echo "BLOCKED (sous): recursive delete through an interpreter (rmtree, rm_rf, rmSync recursive). Name the files, or ask the user."
+          [ $had_noglob = 1 ] || set +f
+          return 1 ;;
+      esac
+    fi
+    [[ $first =~ $allow_re ]] && continue
+    rest="$seg"
+    while [[ $rest =~ $re_home ]]; do
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+      low=$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')
+      for cand in .ssh .aws .gnupg; do
+        # shellcheck disable=SC2053  # $low is a pattern on purpose: ~/.s* reaches .ssh
+        if [[ $cand == $low ]]; then
+          echo "BLOCKED (sous): reading ~/$cand credentials. Ask the user."
+          [ $had_noglob = 1 ] || set +f
+          return 1
+        fi
+      done
+    done
     rest="$seg"
     while [[ $rest =~ $re_env ]]; do
       tok="${BASH_REMATCH[2]}"
       rest="${rest#*"$tok"}"
-      case "$tok" in
+      low=$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')
+      case "$low" in
         *.example|*.sample|*.template|*.dist) continue ;;
       esac
       echo "BLOCKED (sous): $first touches $tok, a secrets file. Read .env.example for the key names."
       [ $had_noglob = 1 ] || set +f
       return 1
     done
+    # A glob that starts with a dot reaches dotfiles: .e*, .[e]nv, .?nv, .*
+    for tok in $seg; do
+      case $tok in *[\*\?\[]*) ;; *) continue ;; esac
+      comp="${tok##*/}"
+      comp="${comp#[<>]}"
+      case $comp in .*|'[.]'*) ;; *) continue ;; esac
+      low=$(printf '%s' "$comp" | tr '[:upper:]' '[:lower:]')
+      for cand in .env .env.local .envrc .env.production .env.development; do
+        # shellcheck disable=SC2053  # $low is the user's glob, matched on purpose
+        if [[ $cand == $low ]]; then
+          echo "BLOCKED (sous): $first $tok reaches $cand, a secrets file. Read .env.example for the key names."
+          [ $had_noglob = 1 ] || set +f
+          return 1
+        fi
+      done
+    done
   done <<< "$segs"
   [ $had_noglob = 1 ] || set +f
 
   # 7. Building a command out of sight: decode or fetch, then run it.
-  local re_shell_pipe='\|[[:space:]]*(sudo[[:space:]]+)?(/bin/|/usr/bin/)?(ba|z|da|k)?sh([[:space:]]|$)'
-  local re_procsub='((ba|z|da|k)?sh|source|\.)[[:space:]]+<\('
+  #    A pipe (not ||) into a shell, through sudo/env/VAR=, or a fetch piped into
+  #    an interpreter reading stdin; a shell fed $(fetch), <(fetch) or <<<.
+  local wrap='(([^[:space:]]*/)?(sudo|env|command|exec|nohup|time|doas)([[:space:]]+-[^[:space:]]*)*[[:space:]]+|[[:alpha:]_][[:alnum:]_]*=[^[:space:]]*[[:space:]]+)*'
+  local shells='([^[:space:]]*/)?(ba|z|da|k|fi|c|tc)?sh'
+  local interp='([^[:space:]]*/)?(python[0-9.]*|perl|ruby|node|deno|bun|php)'
+  local fetch='(curl|wget|base64|xxd|openssl|fetch|nc|ncat|gunzip|zcat|aria2c|http|xh)'
+  local re_shell_pipe="(^|[^|])\\|&?[[:space:]]*${wrap}${shells}([[:space:]]|\$)"
+  local re_interp_pipe="(^|[^[:alnum:]_])${fetch}[[:space:]][^;&${lf}]*[^|]\\|&?[[:space:]]*${wrap}${interp}(([[:space:]]+(-|-[[:alpha:]]{1,3}|--))*)[[:space:]]*(\$|[;&|)${lf}])"
+  local re_shell_subst="(^|[^[:alnum:]_])((ba|z|da|k|fi)?sh|eval|source)[[:space:]]+([^;&|${lf}]*[[:space:]])?(\\\$\\(|${bt})[[:space:]]*${wrap}${fetch}([[:space:]]|\$)"
+  local re_procsub="(^|[^[:alnum:]_.])((ba|z|da|k|fi)?sh|source|\\.|${interp})([[:space:]]+-[^[:space:]]*)*[[:space:]]+(<[[:space:]]*)?<\\("
+  local re_herestr="(^|[^[:alnum:]_.])((ba|z|da|k|fi)?sh|${interp})([[:space:]]+-[^[:space:]]*)*[[:space:]]*<<<[^;&|${lf}]*${fetch}"
   local re_eval_src='eval[[:space:]].*(base64|xxd|openssl|curl|wget|printf[[:space:]]+.*x[0-9a-fA-F])'
-  if [[ $norm =~ $re_shell_pipe || $norm =~ $re_procsub || $norm =~ $re_eval_src ]]; then
+  if [[ $norm =~ $re_shell_pipe || $norm =~ $re_interp_pipe || $norm =~ $re_shell_subst ||
+        $norm =~ $re_procsub || $norm =~ $re_herestr || $norm =~ $re_eval_src ]]; then
     echo "BLOCKED (sous): piping generated or downloaded text into a shell. Save it to a file, show it, then run it."
     return 1
   fi
@@ -329,6 +445,7 @@ _sous_heredoc_line() {
 # Executed as a hook (not sourced): parse stdin, fail closed on garbage.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -uo pipefail
+  if [[ ${1:-} == --version ]]; then echo "sous-guard $SOUS_GUARD_VERSION"; exit 0; fi
   input=$(cat)
   # Regex, not ${input//[[:space:]]/}: that substitution is quadratic in bash 3.2.
   [[ $input =~ [^[:space:]] ]] || exit 0
