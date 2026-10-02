@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- litmus is retired from the marketplace and the toolkit table: its deterministic assertions can pass when they could never fail, and `claude plugin eval` covers the rest.
 - New `sous lint [DIR] [--fix] [--dry-run]`: lists written prohibitions in `CLAUDE.md` / `AGENTS.md` that no rule or guard check enforces; `--fix` adds deny rules through the manifest. It reads every prohibition on a line, not the alternative after "use X instead" or "never skip X", and needs an `Edit` rule (not only a `Read` rule) to call "never edit" enforced.
 - New `compile [DIR] [--to=agents|cursor|copilot] [--write|--remove]`: the deny rules as instructions for agents that don't read `settings.json`.
 - `lint` and `doctor` scan memory files, skills, commands, agents and `.mcp.json` for hidden characters and instruction-dropping lines (`--strict` fails on a hit).
