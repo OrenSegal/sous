@@ -60,6 +60,10 @@ $ git status && ls src
 
 Runs on macOS and Linux (bash and Python 3); on Windows use WSL.
 
+New to harnesses, or deciding what to install? Read the
+[harness guide](docs/harness-guide.md): what is necessary, how to treat mods and
+plugins, and the gaps still open.
+
 ## What sous claims
 
 Three claims, each one checked by something you can run:
