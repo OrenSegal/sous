@@ -41,28 +41,32 @@ SOUS_GUARD_VERSION=0.3.0
 # ($CLAUDE_PROJECT_DIR, else the hook's cwd) lets `sous gate` and `sous fleet`
 # tell worktrees apart.
 # Two things ride on that log without adding any text to it:
-#   - the third identical reason within two minutes adds a "stop retrying" line
-#     to what the agent sees (the log keeps the plain reason), so an agent
-#     looping on a block is told to ask the user instead;
+#   - the third identical reason from the same project dir within two minutes
+#     adds a "stop retrying" line to what the agent sees (the log keeps the
+#     plain reason), so an agent looping on a block is told to ask the user
+#     instead; other sessions sharing the log don't count toward it;
 #   - an allowed command appends one byte to $SOUS_LOG.allowed.YYYYMMDD, so
 #     `sous report` can say how often the guard fires (a block rate).
 sous_guard() {
   local reason shown log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}" where="${CLAUDE_PROJECT_DIR:-$PWD}"
   if reason=$(_sous_match "$1"); then
-    [[ $log != off ]] && { printf . >>"$log.allowed.$(date +%Y%m%d)"; } 2>/dev/null
+    [[ $log != off ]] && {
+      [[ $log == */* && ! -d ${log%/*} ]] && mkdir -p "${log%/*}"
+      printf . >>"$log.allowed.$(date +%Y%m%d)"
+    } 2>/dev/null
     return 0
   fi
   shown="$reason"
   if [[ $log != off ]]; then
-    local now repeats=0 ts r
+    local now repeats=0 ts r w
     now=$(date +%s)
+    where=${where//$'\t'/ }; where=${where//$'\n'/ }
     if [[ -r $log ]]; then
-      while IFS=$'\t' read -r ts r _; do
-        [[ $ts =~ ^[0-9]+$ && $r == "$reason" && $((now - ts)) -le 120 ]] && repeats=$((repeats + 1))
+      while IFS=$'\t' read -r ts r w; do
+        [[ $ts =~ ^[0-9]+$ && $r == "$reason" && $w == "$where" && $((now - ts)) -le 120 ]] && repeats=$((repeats + 1))
       done < <(tail -n 8 "$log" 2>/dev/null)
     fi
     [[ $repeats -ge 2 ]] && shown="$reason Blocked $((repeats + 1)) times in a row. Stop retrying this; ask the user how they want to proceed."
-    where=${where//$'\t'/ }; where=${where//$'\n'/ }
     { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\n' "$now" "$reason" "$where" >>"$log"; } 2>/dev/null
   fi
   printf '%s\n' "$shown"

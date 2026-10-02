@@ -4,8 +4,10 @@ import type { Register } from 'claude-code'
 const PATCH_CAP = 300000
 const filesAtom = atom({ plugin: 'handoff', key: 'files' } as const, [])
 
-// secret-looking files stay out of the patch
-const EXCLUDE = [':(exclude).env*', ':(exclude)**/.env*', ':(exclude)**/*.pem', ':(exclude)**/*.key', ':(exclude)**/*secret*', ':(exclude)**/*credential*']
+// secret-looking files stay out of the patch. Plain pathspecs use fnmatch, where
+// `*` also matches `/`, so `*.pem` covers every depth; `**/*.pem` would need a
+// slash and miss a top-level `private.pem`.
+const EXCLUDE = [':(exclude).env*', ':(exclude)*/.env*', ':(exclude)*.pem', ':(exclude)*.key', ':(exclude)*secret*', ':(exclude)*credential*']
 
 export const register: Register = on => {
   let lastSig = ''
@@ -31,13 +33,14 @@ export const register: Register = on => {
     const git = (argv: string[]) => $.process.run(['git', ...argv]).catch(() => null)
     const stat = await git(['diff', '--stat', 'HEAD'])
     const status = await git(['status', '--porcelain'])
-    // write only when the tree moved since the last export
-    const sig = (stat?.stdout ?? '') + (status?.stdout ?? '')
+    const patch = await git(['diff', 'HEAD', '--', '.', ...EXCLUDE])
+    // write only when the tree moved since the last export; the patch is in the
+    // signature because a second edit to the same lines leaves stat and status alike
+    const sig = (stat?.stdout ?? '') + (status?.stdout ?? '') + (patch?.stdout ?? '')
     if (stat && stat.exitCode === 0 && sig !== lastSig) {
       lastSig = sig
       const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'])
       const head = await git(['rev-parse', '--short', 'HEAD'])
-      const patch = await git(['diff', 'HEAD', '--', '.', ...EXCLUDE])
       const files = await read($, filesAtom)
       const root = await $.session.root()
       const dir = `${root}/.claude/handoff`

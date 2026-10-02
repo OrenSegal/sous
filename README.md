@@ -96,8 +96,8 @@ Three claims, each one checked by something you can run:
 
 Around those claims:
 
-- **Loop breaker.** The third identical block within two minutes adds "Stop
-  retrying this; ask the user" to what the agent sees. It reads the same
+- **Loop breaker.** The third identical block from the same project within two
+  minutes adds "Stop retrying this; ask the user" to what the agent sees. It reads the same
   reason-only log, so no command text is kept.
 - **Block rate.** The guard counts allowed commands as one byte per day in
   `blocks.tsv.allowed.YYYYMMDD`, never their text, and `sous report` shows

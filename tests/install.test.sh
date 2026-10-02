@@ -407,6 +407,29 @@ expect "only block in file: remove deletes it" 0 python3 "$SOUS" compile "$pc" -
 expect "bad target" 64 python3 "$SOUS" compile "$pc" --to=nope
 expect "write and remove conflict" 64 python3 "$SOUS" compile "$pc" --write --remove
 expect "compile without deny rules" 1 python3 "$SOUS" compile "$WORK/nomemory"
+# Compile writes only its block: the file's mode and a symlink stay, and a
+# broken marker pair or a sous.mdc sous didn't write is refused, not overwritten.
+pc2="$WORK/compile2"; mkdir -p "$pc2"
+python3 "$SOUS" install "$pc2" >/dev/null
+printf '# Mine\n' > "$pc2/AGENTS.md"; chmod 644 "$pc2/AGENTS.md"
+expect "compile --write over a 644 file" 0 python3 "$SOUS" compile "$pc2" --write
+expect "AGENTS.md keeps mode 644" 0 python3 -c 'import os, stat, sys; sys.exit(stat.S_IMODE(os.stat(sys.argv[1]).st_mode) != 0o644)' "$pc2/AGENTS.md"
+rm "$pc2/AGENTS.md"; printf '# Shared memory\nkeep this\n' > "$pc2/CLAUDE.md"; ln -s CLAUDE.md "$pc2/AGENTS.md"
+expect "compile --write through a symlinked AGENTS.md" 0 python3 "$SOUS" compile "$pc2" --write
+expect "AGENTS.md is still a symlink" 0 test -L "$pc2/AGENTS.md"
+expect "the link target got the block" 0 sh -c 'grep -q "keep this" "$1/CLAUDE.md" && grep -q "sous:begin" "$1/CLAUDE.md"' _ "$pc2"
+expect "compile --remove through the symlink" 0 python3 "$SOUS" compile "$pc2" --remove
+expect "symlink kept, block gone from its target" 0 sh -c 'test -L "$1/AGENTS.md" && grep -q "keep this" "$1/CLAUDE.md" && ! grep -q "sous:begin" "$1/CLAUDE.md"' _ "$pc2"
+rm "$pc2/AGENTS.md" "$pc2/CLAUDE.md"
+python3 "$SOUS" compile "$pc2" --write >/dev/null
+python3 -c 'import sys; p = sys.argv[1]; t = open(p).read().replace("<!-- sous:end -->\n", ""); open(p, "w").write("# Top\n\n" + t + "\n## Mine\nkeep this\n")' "$pc2/AGENTS.md"
+cp "$pc2/AGENTS.md" "$WORK/agents-broken.md"
+expect "write refuses a begin marker with no end" 1 python3 "$SOUS" compile "$pc2" --write
+expect "remove refuses it too" 1 python3 "$SOUS" compile "$pc2" --remove
+expect "broken-marker file left alone" 0 cmp "$WORK/agents-broken.md" "$pc2/AGENTS.md"
+mkdir -p "$pc2/.cursor/rules"; printf -- '---\ndescription: mine\n---\nmy own rule\n' > "$pc2/.cursor/rules/sous.mdc"
+expect "write refuses a sous.mdc without the sous marker" 1 python3 "$SOUS" compile "$pc2" --write --to=cursor
+expect "that sous.mdc left alone" 0 grep -q "my own rule" "$pc2/.cursor/rules/sous.mdc"
 
 # Block rate: allowed commands counted by the guard (no text), shown by report.
 printf '%s\tBLOCKED (sous): force push. Ask the user.\n' "$(date +%s)" > "$SOUS_LOG"
