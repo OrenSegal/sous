@@ -20,7 +20,7 @@ fail=0
 check() {
   local want="$1" cmd="$2" got payload
   payload=$(jq -cn --arg c "$cmd" '{tool_input:{command:$c}}')
-  (cd "$SANDBOX_DIR" && printf '%s' "$payload" | CLAUDE_TOOL_INPUT='' perl -e 'alarm 5; exec @ARGV' bash "$HOOK" >/dev/null 2>&1)
+  (cd "$SANDBOX_DIR" && printf '%s' "$payload" | CLAUDE_TOOL_INPUT='' perl -e 'alarm 5; exec @ARGV' "$BASH" "$HOOK" >/dev/null 2>&1)
   got=$?
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1))
@@ -43,7 +43,7 @@ check 2 'cd ios && rm -rf .build'
 check 0 'rm -f /tmp/x.log'
 check 0 'rm -r emptydir'
 check 0 'rm file.txt'
-check 0 './scripts/dev/prune-worktrees.sh --dry-run'
+check 0 './scripts/clean-build.sh --dry-run'
 
 # Force push, every spelling.
 check 2 'git push --force origin dev'
@@ -52,15 +52,15 @@ check 2 'git push origin dev --force-with-lease'
 check 2 'git push origin +dev'
 check 2 'git -C . push -f origin dev'
 # Normal pushes stay allowed.
-check 0 'git push origin chore/sous-harness'
-check 0 'git push -u origin chore/sous-harness'
+check 0 'git push origin feature/login'
+check 0 'git push -u origin feature/login'
 check 0 'git push --follow-tags origin dev'
 
 # Secrets dumps.
 check 2 'cat .env'
 check 2 'cat ./.env'
 check 2 'head -5 .env.bootstrap'
-check 2 'grep TOKEN website/.env.local'
+check 2 'grep TOKEN web/.env.local'
 check 2 "cat \".env\""
 # Docs and non-reading commands stay allowed.
 check 0 'cat .env.example'
