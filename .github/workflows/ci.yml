@@ -15,7 +15,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck -S warning hooks/sous-guard.sh bin/tests-ran docs/demo.sh tests/*.sh
+        run: shellcheck -S warning hooks/*.sh bin/tests-ran docs/demo.sh tests/*.sh
+      - name: ruff
+        if: runner.os == 'Linux'
+        run: pipx run ruff check bin/sous
       - name: guard table
         run: bash tests/sous-guard.test.sh
       - name: red-team corpus
@@ -27,12 +30,27 @@ jobs:
         run: /bin/bash tests/sous-guard.test.sh && /bin/bash tests/adversarial.test.sh && /bin/bash tests/tests-ran.test.sh
       - name: install + doctor
         run: bash tests/install.test.sh
+      - name: install + doctor on bash 3.2 (macOS system bash)
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/install.test.sh
       - name: python syntax
         run: python3 -m py_compile bin/sous
       - name: validate plugin
         if: runner.os == 'Linux'
         run: |
           npm install -g @anthropic-ai/claude-code >/dev/null
-          for t in .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents; do
+          for t in . .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents skills; do
             claude plugin validate "$t" --strict
           done
+
+  marketplace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shape (offline, blocking)
+        run: python3 bin/sous marketplace-check --offline
+      - name: pinned refs resolve to their shas (network failure only warns)
+        run: |
+          rc=0; python3 bin/sous marketplace-check || rc=$?
+          if [ "$rc" -eq 75 ]; then echo "::warning::marketplace-check could not reach a remote; pins not verified"; exit 0; fi
+          exit "$rc"

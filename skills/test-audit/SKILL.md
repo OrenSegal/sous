@@ -76,7 +76,7 @@ false green. After any add/delete, run the narrowest suite and read the
 - pytest: `pytest path::Test -q` and check `N passed`; `-p no:randomly` off.
 - Vitest/Jest: `vitest run <file>` and check `Tests  N passed`.
 
-Projects with a wrapper (e.g. `build-ios.sh services <Suite>`) should use it
+Projects with a wrapper (e.g. `make test SUITE=<Suite>`) should use it
 and still check the count: set it in the project's CLAUDE.md so this step
 points at the real command.
 

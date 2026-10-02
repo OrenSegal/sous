@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A command that should be blocked but isn't (bypass)
+    url: https://github.com/OrenSegal/sous/security/advisories/new
+    about: Bypasses are security bugs. Report them privately, not as an issue.

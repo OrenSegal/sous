@@ -3,21 +3,21 @@
   "owner": {
     "name": "Oren Segal"
   },
-  "description": "Tools for checking what coding agents do: a Bash guard and zero-test check, red/green CI for skills, a re-check of cited sources, and file claims between concurrent sessions.",
+  "description": "sous: tools for checking what coding agents actually do.",
   "plugins": [
     {
       "name": "sous",
       "source": "./",
       "description": "sous-guard PreToolUse hook, the test-audit skill and tests-ran. Run `sous install` for permissions, sandbox and ask gates.",
-      "version": "0.2.0"
+      "version": "0.3.0"
     },
     {
       "name": "litmus",
       "source": {
         "source": "github",
         "repo": "OrenSegal/litmus",
-        "ref": "v0.1.1",
-        "sha": "c66edbfa47d53372512f0d8a8777ee5429695cb8"
+        "ref": "v0.2.0",
+        "sha": "c2271a0da1a396d9dd3c9c631f12021bef9a4d5e"
       },
       "description": "Red/green CI for skills and prompts. A green only counts if it could have failed."
     },
@@ -26,8 +26,8 @@
       "source": {
         "source": "github",
         "repo": "OrenSegal/cited",
-        "ref": "v0.2.0",
-        "sha": "de8d76c6706099bb03c1050930633ef4d7fbbe81"
+        "ref": "v0.3.0",
+        "sha": "ba98c3a91a71e8f7ea03d54a31a41cc8f5a8c669"
       },
       "description": "Re-fetches every cited source and flags claims whose words, numbers or names are not on the page.",
       "version": "0.2.0",
@@ -41,8 +41,8 @@
       "source": {
         "source": "github",
         "repo": "OrenSegal/scoped",
-        "ref": "v0.3.0",
-        "sha": "78c45d9f8d872354d9b63ff1d1ad463e3f9409e5"
+        "ref": "v0.4.0",
+        "sha": "1ebc19dd8672a226230d6d7e3153486ffb137d89"
       },
       "description": "File claims between concurrent Claude Code sessions, enforced by a PreToolUse hook.",
       "version": "0.3.0",
