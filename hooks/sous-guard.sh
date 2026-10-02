@@ -31,17 +31,20 @@
 SOUS_GUARD_VERSION=0.3.0
 
 # Prints the block reason and returns 1 when $1 must not run; returns 0 otherwise.
-# Every block appends "epoch<TAB>reason" to $SOUS_LOG (default
+# Every block appends "epoch<TAB>reason<TAB>project dir" to $SOUS_LOG (default
 # ~/.claude/sous/blocks.tsv; SOUS_LOG=off disables). Reason only, never the
 # command: command text can carry secrets. `sous report` reads it back so the
-# rules get tuned from what fired, not from memory.
+# rules get tuned from what fired, not from memory; the directory
+# ($CLAUDE_PROJECT_DIR, else the hook's cwd) lets `sous gate` and `sous fleet`
+# tell worktrees apart.
 sous_guard() {
   local reason
   reason=$(_sous_match "$1") && return 0
   printf '%s\n' "$reason"
-  local log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}"
+  local log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}" where="${CLAUDE_PROJECT_DIR:-$PWD}"
   if [[ $log != off ]]; then
-    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\n' "$(date +%s)" "$reason" >>"$log"; } 2>/dev/null
+    where=${where//$'\t'/ }; where=${where//$'\n'/ }
+    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\n' "$(date +%s)" "$reason" "$where" >>"$log"; } 2>/dev/null
   fi
   return 1
 }

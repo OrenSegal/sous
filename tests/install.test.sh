@@ -243,6 +243,72 @@ addrule "$p5/.claude/settings.json" allow "Bash(make:*)"
 expect "changed settings need a fresh probe" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" doctor "$3" --strict | grep -q "FAIL  strict: permissions or sandbox changed since the probe"' _ "$WORK/home2" "$SOUS" "$p5"
 expect "probe --record on a missing dir" 64 python3 "$SOUS" probe --record "$WORK/nope"
 
+# Tool-set fingerprint: recorded with the probe, drift shows, unpinned servers are named.
+expect "unchanged tool set is ok" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" doctor "$3" | grep -q "ok    MCP servers and plugins unchanged"' _ "$WORK/home2" "$SOUS" "$p5"
+printf '{"mcpServers":{"fetcher":{"command":"npx","args":["-y","some-mcp"]},"pinned":{"command":"npx","args":["-y","good-mcp@1.2.3"]},"pipxpinned":{"command":"pipx","args":["run","good-mcp==1.0"]}}}\n' > "$p5/.mcp.json"
+expect "added MCP server is drift (info)" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" doctor "$3" | grep -q "info  MCP servers or enabled plugins changed"' _ "$WORK/home2" "$SOUS" "$p5"
+expect "added MCP server fails strict" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" doctor "$3" --strict | grep -q "FAIL  strict: MCP servers or enabled plugins changed"' _ "$WORK/home2" "$SOUS" "$p5"
+expect "unpinned npx server named" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "unpinned MCP server: fetcher"' _ "$SOUS" "$p5"
+expect "pinned server not named" 1 sh -c 'python3 "$1" doctor "$2" | grep -q "unpinned MCP server: pinned"' _ "$SOUS" "$p5"
+expect "pipx run subcommand is not the package" 1 sh -c 'python3 "$1" doctor "$2" | grep -q "unpinned MCP server: pipxpinned"' _ "$SOUS" "$p5"
+printf '{"mcpServers":{"s":{"command":"x","env":{"K":"hunter2secret"}}}}\n' > "$p5/.mcp.json"
+expect "MCP env values never printed" 1 sh -c 'python3 "$1" doctor "$2" | grep -q hunter2secret' _ "$SOUS" "$p5"
+rm "$p5/.mcp.json"
+
+# Tamper: the agent can't rewrite the harness. Doctor fails without the deny rules.
+pt="$WORK/tamper"; mkdir -p "$pt"
+python3 "$SOUS" install "$pt" >/dev/null
+expect "tamper deny rules installed" 0 python3 -c '
+import json,sys; d=json.load(open(sys.argv[1]))["permissions"]["deny"]
+for r in ("Edit(.claude/settings.json)","Edit(.claude/settings.local.json)","Edit(.claude/hooks/**)","Edit(.mcp.json)"): assert r in d, r' "$pt/.claude/settings.json"
+expect "doctor passes the tamper check" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "ok    harness files deny-listed"' _ "$SOUS" "$pt"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["permissions"]["deny"]=[r for r in d["permissions"]["deny"] if r!="Edit(.mcp.json)"]; json.dump(d,open(p,"w"))' "$pt/.claude/settings.json"
+expect "doctor fails without a tamper rule" 1 python3 "$SOUS" doctor "$pt"
+expect "upgrade restores the tamper rule" 0 python3 "$SOUS" upgrade "$pt"
+expect "doctor passes after upgrade" 0 python3 "$SOUS" doctor "$pt"
+
+# Lint: written prohibitions that no rule enforces. Report, fix, reverse.
+pl="$WORK/lint"; mkdir -p "$pl"
+python3 "$SOUS" install "$pl" >/dev/null
+cat > "$pl/CLAUDE.md" <<'MD'
+# Rules
+- Never run `git reset --hard`; use `git stash` instead.
+- Do not edit `config/prod.yml` or read `.env`.
+- Never skip the tests.
+- Do not use `git stash drop`, use `git stash pop` for that.
+- Never skip `git status` before a commit.
+- Never edit `docs/frozen.md` by hand; never run `git gc --prune=now`.
+```
+never `ignored in fence`
+```
+MD
+# A Read rule alone does not enforce "never edit".
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["permissions"]["deny"].append("Read(docs/frozen.md)"); json.dump(d,open(p,"w"))' "$pl/.claude/settings.json"
+cp "$pl/.claude/settings.json" "$WORK/lint-before.json"
+expect "lint reports and exits 0" 0 python3 "$SOUS" lint "$pl"
+expect "lint names the unenforced command" 0 sh -c 'python3 "$1" lint "$2" | grep -q "git reset --hard"' _ "$SOUS" "$pl"
+expect "lint names the unenforced path" 0 sh -c 'python3 "$1" lint "$2" | grep -q "config/prod.yml"' _ "$SOUS" "$pl"
+expect "lint skips fenced blocks" 1 sh -c 'python3 "$1" lint "$2" | grep -q "ignored in fence"' _ "$SOUS" "$pl"
+expect "lint: the alternative after a comma is not prohibited" 1 sh -c 'python3 "$1" lint "$2" | grep -q "git stash pop"' _ "$SOUS" "$pl"
+expect "lint: never skip X does not deny X" 1 sh -c 'python3 "$1" lint "$2" | grep -q "never .git status"' _ "$SOUS" "$pl"
+expect "lint: a second prohibition on the line is read" 0 sh -c 'python3 "$1" lint "$2" | grep -q "git gc --prune=now"' _ "$SOUS" "$pl"
+expect "lint: a Read rule does not enforce never-edit" 0 sh -c 'python3 "$1" lint "$2" | grep -q "docs/frozen.md.*Edit(docs/frozen.md)"' _ "$SOUS" "$pl"
+expect "lint without --fix writes nothing" 0 cmp "$WORK/lint-before.json" "$pl/.claude/settings.json"
+expect "lint --fix --dry-run" 0 python3 "$SOUS" lint "$pl" --fix --dry-run
+expect "dry run left settings alone" 0 cmp "$WORK/lint-before.json" "$pl/.claude/settings.json"
+expect "lint --fix" 0 python3 "$SOUS" lint "$pl" --fix
+expect "fix added deny rules" 0 python3 -c '
+import json,sys; d=json.load(open(sys.argv[1]))["permissions"]["deny"]
+assert any("git reset --hard" in r for r in d), d
+assert any("config/prod.yml" in r for r in d), d' "$pl/.claude/settings.json"
+expect "lint after fix: nothing left to fix" 1 sh -c 'python3 "$1" lint "$2" | grep -q "would add"' _ "$SOUS" "$pl"
+expect "doctor passes after lint --fix" 0 python3 "$SOUS" doctor "$pl"
+expect "uninstall reverses lint --fix" 0 python3 "$SOUS" uninstall "$pl"
+mkdir -p "$WORK/nomemory"
+expect "lint on a project with no memory file" 0 python3 "$SOUS" lint "$WORK/nomemory"
+expect "lint on a missing dir" 64 python3 "$SOUS" lint "$WORK/nope"
+expect "lint rejects unknown flag" 64 python3 "$SOUS" lint "$pl" --nope
+
 # Plugin + project copy: the guard would run twice. HOME is faked with the
 # sous plugin enabled and installed from this repo.
 h3="$WORK/home3"; mkdir -p "$h3/.claude/plugins"
@@ -354,10 +420,13 @@ expect "version matches the guard stamp" 0 sh -c '[ "$(python3 "$1" --version)" 
 
 # Repo facts that live in one place and are quoted elsewhere.
 REPO="$(cd "$HERE/.." && pwd)"
+# An "Unreleased" section may sit above it; the first released entry is the version.
 expect "CHANGELOG top entry and marketplace sous version are plugin.json's" 0 python3 -c '
 import json, re, sys; r = sys.argv[1]
 v = json.load(open(r + "/.claude-plugin/plugin.json"))["version"]
-top = re.search(r"^## (\S+)", open(r + "/CHANGELOG.md").read(), re.M).group(1)
+heads = re.findall(r"^## (\S+)", open(r + "/CHANGELOG.md").read(), re.M)
+assert "Unreleased" not in heads[1:], heads
+top = [h for h in heads if h != "Unreleased"][0]
 mkt = [p.get("version") for p in json.load(open(r + "/.claude-plugin/marketplace.json"))["plugins"] if p["name"] == "sous"]
 assert top == v and mkt == [v], (v, top, mkt)' "$REPO"
 expect "docs/demo.txt is what docs/demo.sh prints" 0 sh -c 'bash "$1/docs/demo.sh" | cmp -s - "$1/docs/demo.txt"' _ "$REPO"
@@ -381,6 +450,25 @@ assert sorted(rows) == sorted(p["name"] for p in m["plugins"]), sorted(rows)
 for name, row in rows.items():
     assert f"(https://github.com/OrenSegal/{name})" in row, row
     assert f"`claude plugin install {name}@{mk}`" in row, row' "$REPO"
+# Every suite runs in CI (bash and macOS bash 3.2) and is listed for contributors.
+expect "every tests/*.test.sh is in ci.yml twice and in CONTRIBUTING.md" 0 python3 -c '
+import glob, os, re, sys; r = sys.argv[1]
+ci = open(r + "/.github/workflows/ci.yml").read()
+contrib = open(r + "/CONTRIBUTING.md").read()
+for t in sorted(glob.glob(r + "/tests/*.test.sh")):
+    rel = "tests/" + os.path.basename(t)
+    assert re.search(r"(?<!/bin/)bash " + re.escape(rel), ci), rel + " not run by bash in ci.yml"
+    assert "/bin/bash " + rel in ci, rel + " not run on bash 3.2 in ci.yml"
+    assert "bash " + rel in contrib, rel + " not in CONTRIBUTING.md"' "$REPO"
+# OPTIONS is the command list; --help must name every command and option in it.
+expect "sous --help names every command and option" 0 python3 -c '
+import re, runpy, subprocess, sys; sous = sys.argv[1]
+OPTIONS = runpy.run_path(sous, run_name="sous_cli")["OPTIONS"]
+helptext = subprocess.run([sys.executable, sous, "--help"], capture_output=True, text=True).stdout
+for cmd, opts in OPTIONS.items():
+    assert re.search(r"^  sous " + re.escape(cmd) + r"\b", helptext, re.M), cmd + " missing from --help"
+    for o in opts:
+        assert o.rstrip("=") in helptext, f"{cmd} {o} missing from --help"' "$SOUS"
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

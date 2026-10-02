@@ -18,7 +18,11 @@
       "Edit(.env)",
       "Edit(.env.*)",
       "Read(!.env.example)",
-      "Edit(!.env.example)"
+      "Edit(!.env.example)",
+      "Edit(.claude/settings.json)",
+      "Edit(.claude/settings.local.json)",
+      "Edit(.claude/hooks/**)",
+      "Edit(.mcp.json)"
     ],
     "ask": [
       "Bash(git push:*)",

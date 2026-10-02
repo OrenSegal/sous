@@ -4,7 +4,7 @@
 Agent = model + harness. sous covers the harness in five layers:
 
   1 memory       CLAUDE.md / AGENTS.md
-  2 tools        .mcp.json, plugins (reported, not enforced)
+  2 tools        .mcp.json, plugins (fingerprinted, so drift shows)
   3 permissions  settings.json deny/ask + the OS sandbox (Seatbelt / bubblewrap)
   4 hooks        sous-guard.sh PreToolUse hard stops
   5 gates        ask rules on push/commit/PR, bypass mode disabled
@@ -20,6 +20,15 @@ Usage:
   sous probe     [--record DIR]                        live red-team prompts for a fresh session;
                                                        --record notes that you ran them and they held
   sous report    [--days=N]                            what the guard blocked, and how to tune it
+  sous lint      [DIR] [--fix] [--dry-run]             "never X" lines in CLAUDE.md / AGENTS.md that no deny rule
+                                                       or guard rule enforces; --fix adds them as deny rules
+  sous gate      [DIR] [--base REF] [--json] [--test-log=FILE] [--transcript=FILE.jsonl]
+                                                       exit 0 only when the branch is safe to merge:
+                                                       clean, pushed, tests ran and not weakened, no
+                                                       unreviewed guard blocks, doctor passes;
+                                                       --ack-blocks marks this worktree's blocks reviewed
+  sous fleet     [DIR] [--base REF] [--json]           every worktree of the repo: branch, dirty,
+                                                       ahead/behind, tests ran, blocks, scoped claims
   sous marketplace-check [REPO] [--offline] [--timeout=S]
                                                        verify each pinned plugin ref resolves to its sha
   sous --version
@@ -40,6 +49,7 @@ not reach the network (nothing was disproved).
 import collections
 import copy
 import filecmp
+import fnmatch
 import glob
 import hashlib
 import json
@@ -74,6 +84,12 @@ REQUIRED_DENY = [
 ]
 REQUIRED_ASK = ["Bash(git push:*)", "Bash(git commit:*)", "Bash(dangerouslyDisableSandbox:true)"]
 REQUIRED_IOS_EXCLUDED = ["xcodebuild *", "xcrun *"]
+# The harness's own switches. Claude Code prompts before the agent writes these, but
+# bypassPermissions allows it; a deny rule holds in every mode. Claude Code's docs
+# say Edit rules also stop Bash redirects and tee into the path; other Bash writes
+# (sed -i, an interpreter) are left to the guard and the sandbox.
+REQUIRED_TAMPER_DENY = ["Edit(.claude/settings.json)", "Edit(.claude/settings.local.json)",
+                        "Edit(.claude/hooks/**)", "Edit(.mcp.json)"]
 
 
 class SettingsError(Exception):
@@ -448,6 +464,63 @@ def settings_fingerprint(effective):
     return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def mcp_servers(root):
+    """{name: shape} for the project's .mcp.json, without env or header values
+    (they hold secrets, and a fingerprint of them would change on rotation)."""
+    servers = _dict(read_json_quiet(os.path.join(root, ".mcp.json")).get("mcpServers"))
+    out = {}
+    for name, spec in servers.items():
+        spec = _dict(spec)
+        out[name] = {"command": spec.get("command"), "args": spec.get("args"), "url": spec.get("url"),
+                     "type": spec.get("type"), "env": sorted(_dict(spec.get("env"))),
+                     "headers": sorted(_dict(spec.get("headers")))}
+    return out
+
+
+def enabled_plugins(layers):
+    """Plugin names enabled across user, project and local settings."""
+    enabled = {}
+    for data in layers:
+        ep = _dict(data).get("enabledPlugins")
+        if isinstance(ep, dict):
+            enabled.update(ep)
+    return sorted(k for k, v in enabled.items() if v is True and isinstance(k, str))
+
+
+def tools_fingerprint(root, layers):
+    """Layer 2 as a hash: the MCP server set and the enabled plugins with the
+    version or commit each resolves to. A changed server command, a swapped
+    plugin or a bumped sha moves it; an env value does not."""
+    installed = _dict(read_json_quiet(INSTALLED_PLUGINS).get("plugins"))
+    plugins = {}
+    for name in enabled_plugins(layers):
+        entries = installed.get(name)
+        plugins[name] = sorted({f"{_dict(e).get('version')}@{_dict(e).get('gitCommitSha')}"
+                                for e in (entries if isinstance(entries, list) else [])})
+    core = {"mcp": mcp_servers(root), "plugins": plugins}
+    return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def unpinned_mcp(servers):
+    """MCP servers launched by a package runner with no version pin, or over
+    plain http: whatever the registry or host serves next runs with your access."""
+    out = []
+    for name, spec in servers.items():
+        args = [a for a in (spec.get("args") or []) if isinstance(a, str)]
+        cmd = os.path.basename(spec.get("command") or "")
+        if cmd in ("npx", "bunx", "pnpx", "uvx", "pipx"):
+            words = [a for a in args if not a.startswith("-")]
+            if cmd == "pipx" and words[:1] == ["run"]:
+                words = words[1:]  # `pipx run PKG`: run is the subcommand
+            pkg = next(iter(words), "")
+            if not re.search(r"(?<=.)@[\w.^~<>=-]*\d|==\d", pkg):
+                out.append(f"{name} ({cmd} {pkg or '?'} has no version pin)")
+        url = spec.get("url")
+        if isinstance(url, str) and url.startswith("http://") and not re.match(r"http://(localhost|127\.)", url):
+            out.append(f"{name} ({url} is plain http)")
+    return out
+
+
 def load_project(root):
     """(settings, local, effective) for root; raises SettingsError."""
     claude = os.path.join(root, ".claude")
@@ -459,7 +532,7 @@ def load_project(root):
 
 def probe_record(root):
     try:
-        effective = load_project(root)[2]
+        base, local, effective = load_project(root)
     except SettingsError as e:
         print(f"sous: {e}", file=sys.stderr)
         return 1
@@ -468,7 +541,9 @@ def probe_record(root):
     except SettingsError:
         data = {}
     projects = _dict(data.get("projects"))
+    layers = [] if in_ci() else [read_json_quiet(USER_SETTINGS)]
     projects[root] = {"fingerprint": settings_fingerprint(effective),
+                      "tools": tools_fingerprint(root, layers + [base, local]),
                       "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "sous": SOUS_VERSION}
     os.makedirs(os.path.dirname(PROBES_FILE), exist_ok=True)
     write_json_atomic(PROBES_FILE, {"sous_probes": 1, "projects": projects})
@@ -819,6 +894,173 @@ def marketplace_check(repo, offline, timeout):
     return 75 if unreachable else 0
 
 
+# ------------------------------------------------------------------------ lint
+# A "never X" in CLAUDE.md is a request; a deny rule or the guard is a control.
+# Only about 1 in 20 written security rules has a control behind it (arXiv 2608.23550),
+# so lint reads the prohibitions and asks, for each one that names a command or a
+# path in backticks, whether anything enforces it. It judges the real guard, not a copy of its table.
+PROHIBIT = re.compile(r"\b(never|must not|mustn't|do not|don't|forbidden|prohibited|not allowed to)\b", re.I)
+# A comma ends the clause unless a list goes on (`a`, `b` or `c`): in "don't use
+# `pip`, use `uv`" the second span is the advice, not the prohibition.
+CLAUSE_END = re.compile(r";|\.\s|\s(?:\u2014|--)\s|\b(?:instead|unless|except|but)\b|,(?!\s*(?:`|or\b|and\b|nor\b))",
+                        re.I)
+SPAN = re.compile(r"`([^`\n]+)`")
+READS = re.compile(r"\b(read|reads|reading|open|view|cat|print|show|expose|leak)\b", re.I)
+# "Never skip `make lint`", "never commit without `make test`": the command is the
+# one that must run, so denying it would forbid the opposite of what was written.
+MUST_RUN = re.compile(r"\b(skip|skipping|omit|bypass|forget|ignore|disable|without)\b", re.I)
+LIST_GLUE = re.compile(r"[\s,]*(?:(?:or|and|nor)\s*)?", re.I)
+
+
+def _span_kind(span):
+    """'path', 'command' or None for a backticked span in a prohibition."""
+    span = span.strip()
+    if not span or "://" in span or re.search(r"[<>$|&;(){}*?\\]", span):
+        return None
+    toks = span.split()
+    first = os.path.basename(toks[0]) if toks[0] != "sudo" or len(toks) < 2 else os.path.basename(toks[1])
+    if len(toks) == 1 and (span.startswith((".", "~", "/")) or "/" in span or re.search(r"\.\w{1,6}$", span)):
+        return "path"
+    if re.fullmatch(r"[a-z][\w.+-]*", first) and shutil.which(first):
+        return "command"
+    return None
+
+
+def rule_covers(rule, kind, span, tool=None):
+    """Whether one permission rule (allow/ask/deny syntax) covers span. For a
+    path, tool ("Read" or "Edit") narrows it: a Read rule doesn't stop an edit."""
+    if not isinstance(rule, str) or rule.startswith("!"):
+        return False
+    m = re.match(r"^(Bash|Read|Edit)\((.*)\)$", rule.strip())
+    if not m or (kind == "command") != (m.group(1) == "Bash") or (tool and m.group(1) != tool):
+        return False
+    tool, inner = m.groups()
+    if tool == "Bash":
+        if inner.endswith(":*"):
+            return span == inner[:-2] or span.startswith(inner[:-2] + " ")
+        return fnmatch.fnmatchcase(span, inner) or span == inner
+    path = re.sub(r"^\./", "", span).rstrip("/")
+    pat = re.sub(r"^\.?/", "", inner).replace("**", "*").rstrip("/")
+    return any(fnmatch.fnmatchcase(c, g) for c in (path, os.path.basename(path)) for g in (pat, pat + "/*"))
+
+
+def guard_blocks(guard, bash, command):
+    """Whether the guard stops command: exit 2 from the hook."""
+    payload = json.dumps({"tool_input": {"command": command}})
+    try:
+        res = subprocess.run([bash, guard], input=payload, text=True, capture_output=True, timeout=10,
+                             env=dict(os.environ, SOUS_LOG="off"))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return res.returncode == 2
+
+
+def lint_prose(root, settings, files):
+    """Read the prohibitions in memory files: {covered, unmapped, uncovered}.
+    uncovered rows are (file, line, kind, span, suggested deny rules)."""
+    perm = _dict(settings.get("permissions"))
+    held = _rules(perm.get("deny")) + _rules(perm.get("ask"))
+    held_paths = [x for x in _rules(_dict(_dict(settings.get("sandbox")).get("filesystem")).get("denyRead"))]
+    guard = next(iter(guards_in(settings, root)), None) or HOOK_SRC
+    bash = shutil.which("bash")
+    out = {"covered": 0, "unmapped": 0, "uncovered": []}
+    seen = set()
+    for name in files:
+        try:
+            with open(os.path.join(root, name), errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        fenced = False
+        for n, line in enumerate(lines, 1):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            pos = 0
+            while not fenced:  # every prohibition on the line: "never X; never Y" is two
+                m = PROHIBIT.search(line, pos)
+                if not m:
+                    break
+                end = CLAUSE_END.search(line, m.end())
+                clause = line[m.start():end.start() if end else len(line)]
+                pos = end.end() if end else len(line)
+                targets, prev, reads, must_run = [], 0, False, False
+                for sm in SPAN.finditer(clause):
+                    # the verb just before a span decides what is forbidden; a list
+                    # ("read `a` or `b`") carries the verb on to the next span
+                    lead = clause[prev:sm.start()]
+                    if prev == 0 or not LIST_GLUE.fullmatch(lead):
+                        reads, must_run = bool(READS.search(lead)), bool(MUST_RUN.search(lead))
+                    kind = _span_kind(sm.group(1))
+                    if kind and not (kind == "command" and must_run):
+                        targets.append((kind, sm.group(1).strip(), reads))
+                    prev = sm.end()
+                if not targets:
+                    out["unmapped"] += 1
+                    continue
+                for kind, span, reads in targets:
+                    if (kind, span, reads) in seen:
+                        continue
+                    seen.add((kind, span, reads))
+                    if kind == "command":
+                        rules = [] if (any(rule_covers(r, kind, span) for r in held)
+                                       or (bash and guard_blocks(guard, bash, span))) else [f"Bash({span}:*)"]
+                    else:
+                        path = re.sub(r"^\./", "", span)
+                        pat = path + "**" if path.endswith("/") else path
+                        edit_ok = any(rule_covers(r, kind, span, "Edit") for r in held)
+                        read_ok = (not reads or any(rule_covers(r, kind, span, "Read") for r in held)
+                                   or any(rule_covers(f"Read({h})", kind, span) for h in held_paths))
+                        if not (edit_ok and read_ok) and bash and guard_blocks(guard, bash, "cat " + span):
+                            edit_ok = read_ok = True  # the guard stops any Bash call naming it
+                        rules = ([] if edit_ok else [f"Edit({pat})"]) + ([] if read_ok else [f"Read({pat})"])
+                    if rules:
+                        out["uncovered"].append((name, n, kind, span, rules))
+                    else:
+                        out["covered"] += 1
+    return out
+
+
+def lint(root, fix, dry_run):
+    claude = os.path.join(root, ".claude")
+    settings_path = os.path.join(claude, "settings.json")
+    try:
+        settings, lenient = read_json(settings_path) if os.path.isfile(settings_path) else ({}, False)
+        local = read_json(os.path.join(claude, "settings.local.json"))[0] \
+            if os.path.isfile(os.path.join(claude, "settings.local.json")) else {}
+    except SettingsError as e:
+        print(f"sous: {e}", file=sys.stderr)
+        return 1
+    files = [n for n in ("CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md") if os.path.isfile(os.path.join(root, n))]
+    if not files:
+        print(f"sous lint: no CLAUDE.md or AGENTS.md in {root}")
+        return 0
+    res = lint_prose(root, overlay(settings, local), files)
+    print(f"sous lint {root}: {res['covered']} enforced, {len(res['uncovered'])} not enforced, "
+          f"{res['unmapped']} prohibition(s) with no command or path in backticks (can't be checked)")
+    for name, n, kind, span, rules in res["uncovered"]:
+        print(f"  {name}:{n}  never `{span}` ({kind}) has no rule; would add {', '.join(rules)}")
+    if not fix or not res["uncovered"]:
+        if res["uncovered"]:
+            print("  --fix adds these to permissions.deny (additive; `sous uninstall` removes them)")
+        return 0
+    new = [r for *_, rules in res["uncovered"] for r in rules]
+    before, notes, ops = copy.deepcopy(settings), [], []
+    merge(settings, {"permissions": {"deny": new}}, notes, ops=ops)
+    for note in notes:
+        print("  " + note)
+    if dry_run:
+        return 0
+    if lenient:
+        return refuse_jsonc_rewrite(settings_path)
+    created = not os.path.exists(settings_path)
+    os.makedirs(claude, exist_ok=True)
+    write_json_atomic(settings_path, settings)
+    update_manifest(claude, ops, {}, [], created and settings != before)
+    print(f"  wrote {len(new)} deny rule(s) to .claude/settings.json; review them with `git diff`")
+    return 0
+
+
 # ---------------------------------------------------------------------- doctor
 class Report:
     def __init__(self):
@@ -883,12 +1125,40 @@ def doctor(root, ios, strict, mode):
         r.bad(f"{n} is {lines} lines, over the {MEMORY_LINE_BUDGET}-line budget (SOUS_MEMORY_LINES)") \
             if lines > MEMORY_LINE_BUDGET else r.ok(f"{n} {lines}/{MEMORY_LINE_BUDGET} lines")
 
+    prose = lint_prose(root, eff, found)
+    if prose["unmapped"] or prose["uncovered"]:
+        r.info(f"{len(prose['uncovered'])} written prohibition(s) no rule enforces, {prose['unmapped']} with no "
+               "command or path to check: `sous lint` lists them, `sous lint --fix` adds deny rules")
+    elif prose["covered"]:
+        r.ok(f"{prose['covered']} written prohibition(s) in memory files, each enforced by a rule")
+
     print("Layer 2 tools")
-    r.info(".mcp.json present" if os.path.isfile(os.path.join(root, ".mcp.json")) else "no project .mcp.json")
+    servers = mcp_servers(root)
+    r.info(f".mcp.json: {len(servers)} server(s): {', '.join(sorted(servers))}" if servers
+           else "no project .mcp.json servers")
+    for line in unpinned_mcp(servers):
+        r.info(f"unpinned MCP server: {line}")
+    tools_now = tools_fingerprint(root, [] if ci else [user or {}, s, local])
+    rec = _dict(_dict(read_json_quiet(PROBES_FILE).get("projects")).get(root))
+    if ci:
+        r.skip("tool-set record (kept in your ~/.claude, not the CI runner's)")
+    elif rec.get("tools") == tools_now:
+        r.ok(f"MCP servers and plugins unchanged since {rec.get('recorded', '?')}")
+    elif rec.get("tools"):
+        msg = (f"MCP servers or enabled plugins changed since {rec.get('recorded', '?')}: review them, "
+               f"then `sous probe --record {root}`")
+        r.bad("strict: " + msg) if strict else r.info(msg)
+    else:
+        r.info(f"no tool-set baseline: `sous probe --record {root}` records the MCP servers and plugins as is")
 
     print("Layer 3 permissions + sandbox")
     lacks = missing(REQUIRED_DENY, perm.get("deny"))
     r.bad("deny lacks " + ", ".join(lacks)) if lacks else r.ok("deny rules")
+    # The agent can't switch the harness off: its own settings, hooks and tool set
+    # are deny-listed against Edit, Write and Bash redirects in every permission mode.
+    lacks = missing(REQUIRED_TAMPER_DENY, perm.get("deny"))
+    r.bad("deny lacks " + ", ".join(lacks) + " (the agent could rewrite its own harness; `sous upgrade` adds them)") \
+        if lacks else r.ok("harness files deny-listed against agent edits")
     if sb.get("enabled") is True:
         r.ok("sandbox enabled")
     else:
@@ -1158,17 +1428,27 @@ def guard_latency_ms(hook, bash="bash"):
     return best
 
 
-def read_blocks(days):
+def block_rows():
+    """(epoch, reason, project dir or None) per guard block. Rows from a guard
+    before the third column have no directory."""
     if BLOCK_LOG == "off" or not os.path.isfile(BLOCK_LOG):
         return []
-    cutoff = time.time() - days * 86400
     out = []
     with open(BLOCK_LOG, errors="replace") as f:
         for line in f:
-            ts, _, reason = line.rstrip("\n").partition("\t")
-            if ts.isdigit() and int(ts) >= cutoff and reason:
-                out.append(reason.replace("BLOCKED (sous): ", "").split(".")[0])
+            cols = line.rstrip("\n").split("\t")
+            if len(cols) >= 2 and cols[0].isdigit() and cols[1]:
+                out.append((int(cols[0]), cols[1], cols[2] if len(cols) > 2 and cols[2] else None))
     return out
+
+
+def short_reason(reason):
+    return reason.replace("BLOCKED (sous): ", "").split(".")[0]
+
+
+def read_blocks(days):
+    cutoff = time.time() - days * 86400
+    return [short_reason(reason) for ts, reason, _ in block_rows() if ts >= cutoff]
 
 
 def report(days):
@@ -1215,7 +1495,438 @@ doctor --strict asks for a fresh probe whenever permissions or sandbox change.
 """
 
 
-# Options each command accepts; a value-taking option is spelled --name=value.
+# --- gate and fleet: git worktrees, the block log, test logs ----------------
+
+TESTS_RAN = os.path.join(SOUS_ROOT, "bin", "tests-ran")
+TESTS_WEAKENED = os.path.join(SOUS_ROOT, "bin", "tests-weakened")
+GATE_ACK = "sous-gate-ack"      # in the worktree's git dir: when blocks were last reviewed
+TEST_LOG = "sous-test.log"      # in the worktree's git dir, unless --test-log or SOUS_TEST_LOG
+# A linked worktree checks out tracked files only; these can silently differ from
+# the main checkout's (settings.local.json is usually gitignored, so it is absent).
+WORKTREE_HARNESS = [".claude/settings.json", ".claude/settings.local.json", ".mcp.json",
+                    ".claude/hooks/sous-guard.sh"]
+
+
+def git(cwd, *args):
+    """git's stdout without the trailing newline, or None when it fails. Never
+    takes optional locks, so a status doesn't refresh (write) the index."""
+    try:
+        res = subprocess.run(["git", "--no-optional-locks", "-C", cwd, *args],
+                             capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return res.stdout.rstrip("\n") if res.returncode == 0 else None
+
+
+def worktrees(cwd):
+    """`git worktree list --porcelain` as dicts; the main worktree comes first.
+    -z (git 2.36+) keeps a newline in a path whole; older git splits on lines."""
+    out = git(cwd, "worktree", "list", "--porcelain", "-z")
+    sep = "\0"
+    if out is None:
+        out, sep = git(cwd, "worktree", "list", "--porcelain"), "\n"
+    rows, cur = [], None
+    for field in (out or "").split(sep):
+        if not field:
+            cur = None
+            continue
+        key, _, val = field.partition(" ")
+        if key == "worktree":
+            cur = {"path": os.path.realpath(val), "head": None, "branch": None,
+                   "bare": False, "detached": False, "locked": False, "prunable": False}
+            rows.append(cur)
+        elif cur is not None:
+            if key == "HEAD":
+                cur["head"] = val
+            elif key == "branch":
+                cur["branch"] = val.removeprefix("refs/heads/")
+            elif key in ("bare", "detached", "locked", "prunable"):
+                cur[key] = True
+    return rows
+
+
+def owner(path, roots):
+    """The innermost of roots that contains path (worktrees can nest), or None."""
+    p = os.path.realpath(path)
+    hits = [r for r in roots if p == r or p.startswith(r.rstrip(os.sep) + os.sep)]
+    return max(hits, key=len) if hits else None
+
+
+def resolve_base(cwd, base):
+    """The base ref to compare against: --base, else origin/HEAD, main, master."""
+    for ref in [base] if base else ["origin/HEAD", "main", "master", "origin/main", "origin/master"]:
+        if git(cwd, "rev-parse", "--verify", "--quiet", ref + "^{commit}"):
+            return ref
+    return None
+
+
+def tests_ran(log, minimum=None):
+    """bin/tests-ran on log: (exit code, its message). With no minimum, the count."""
+    if minimum is None:
+        res = subprocess.run(["bash", "-c", '. "$1"; tests_ran_count "$2"', "_", TESTS_RAN, log],
+                             capture_output=True, text=True)
+        return res.returncode, res.stdout.strip()
+    res = subprocess.run(["bash", TESTS_RAN, "--min", str(minimum), log], capture_output=True, text=True)
+    return res.returncode, (res.stdout + res.stderr).strip()
+
+
+def scoped_claims():
+    """(claims, note): scoped's active claims, or None and why there are none to read.
+    scoped is optional: absent or failing, nothing here fails because of it."""
+    exe = shutil.which("scoped")
+    if not exe:
+        return None, "scoped not on PATH"
+    try:
+        res = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=20)
+        claims = json.loads(res.stdout).get("claims") if res.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        claims = None
+    if not isinstance(claims, list):
+        return None, "scoped status --json gave no claims list"
+    return [c for c in claims if isinstance(c, dict) and isinstance(c.get("file_path"), str)], ""
+
+
+class GateContext:
+    """What every gate check reads: the worktree, the base, and the branch's changes."""
+
+    def __init__(self, root, base, test_log, transcript):
+        self.root, self.base, self.transcript = root, base, transcript
+        self.merge_base = git(root, "merge-base", base, "HEAD")
+        self.forked_at = int(git(root, "show", "-s", "--format=%ct", self.merge_base) or 0)
+        self.git_dir = git(root, "rev-parse", "--absolute-git-dir")
+        self.test_log = os.path.abspath(test_log or os.environ.get("SOUS_TEST_LOG")
+                                        or os.path.join(self.git_dir, TEST_LOG))
+        self.worktrees = worktrees(root)
+        diff = git(root, "diff", "--name-only", "-z", self.merge_base, "--") or ""
+        new = git(root, "ls-files", "--others", "--exclude-standard", "-z") or ""
+        self.changed = sorted({p for p in (diff + "\0" + new).split("\0") if p})
+
+
+GATE_CHECKS = []
+
+
+def gate_check(name):
+    """Register fn(ctx) -> (status, detail, fix) as a gate check. status is ok,
+    fail, warn, info or skip; only fail blocks the merge. A new check is one
+    decorated function: the verdict, the text and the JSON come from this list."""
+    def register(fn):
+        GATE_CHECKS.append((name, fn))
+        return fn
+    return register
+
+
+@gate_check("clean")
+def gate_clean(c):
+    out = git(c.root, "status", "--porcelain")
+    if out is None:
+        return "fail", "git status failed", "run `git status` and fix what it reports"
+    if out:
+        lines = out.splitlines()
+        return "fail", f"{len(lines)} uncommitted or untracked path(s), e.g. {lines[0][3:]}", \
+            "commit or stash them (`git status` lists them)"
+    return "ok", "working tree clean", ""
+
+
+@gate_check("pushed")
+def gate_pushed(c):
+    branch = git(c.root, "symbolic-ref", "--short", "-q", "HEAD")
+    if not branch:
+        return "fail", "detached HEAD: no branch to merge", "check out a branch, then push it"
+    up = git(c.root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if not up:
+        return "fail", f"{branch} has no upstream", f"git push -u origin {branch}"
+    ahead = git(c.root, "rev-list", "--count", "@{u}..HEAD") or "0"
+    if ahead != "0":
+        return "fail", f"{ahead} commit(s) on {branch} not pushed to {up}", "git push"
+    return "ok", f"{branch} pushed to {up} (as of the last fetch)", ""
+
+
+@gate_check("tests-ran")
+def gate_tests_ran(c):
+    fix = f'run the tests again: <test command> 2>&1 | tee "{c.test_log}"'
+    if not os.path.isfile(c.test_log):
+        return "fail", f"no test log at {c.test_log}", fix
+    rc, msg = tests_ran(c.test_log, 1)
+    if rc != 0:
+        return "fail", msg.splitlines()[-1] if msg else f"tests-ran exited {rc}", fix
+    logged = os.path.getmtime(c.test_log)
+    for rel in c.changed:
+        p = os.path.join(c.root, rel)
+        if os.path.isfile(p) and os.path.realpath(p) != os.path.realpath(c.test_log) \
+                and os.path.getmtime(p) > logged:
+            return "fail", f"the log is older than {rel}: edited after the run", fix
+    return "ok", f"{msg.removeprefix('tests-ran: ')}, after the last edit ({c.test_log})", ""
+
+
+@gate_check("tests-weakened")
+def gate_tests_weakened(c):
+    res = subprocess.run(["bash", TESTS_WEAKENED, c.merge_base], cwd=c.root, capture_output=True, text=True)
+    if res.returncode == 0:
+        return "ok", f"no test deleted, skipped or loosened since {c.base}", ""
+    if res.returncode == 1:
+        found = res.stdout.strip().splitlines()
+        more = f" (+{len(found) - 1} more: `tests-weakened {c.base}`)" if len(found) > 1 else ""
+        return "fail", found[0] + more, "restore the test, or show in the PR why the change is right"
+    return "fail", (res.stderr.strip() or f"tests-weakened exited {res.returncode}"), \
+        f"run `tests-weakened {c.base}` in {c.root}"
+
+
+@gate_check("blocks")
+def gate_blocks(c):
+    if BLOCK_LOG == "off":
+        return "skip", "SOUS_LOG=off: no block log", ""
+    try:
+        with open(os.path.join(c.git_dir, GATE_ACK)) as f:
+            acked = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        acked = 0
+    roots = [w["path"] for w in c.worktrees]
+    rows = [(ts, r, p) for ts, r, p in block_rows() if ts >= c.forked_at]
+    mine = [short_reason(r) for ts, r, p in rows if p and ts > acked and owner(p, roots) == c.root]
+    pathless = sum(1 for _, _, p in rows if not p)
+    if mine:
+        top = ", ".join(f"{r} x{n}" for r, n in collections.Counter(mine).most_common(3))
+        return "fail", f"{len(mine)} guard block(s) here since the branch forked: {top}", \
+            "review each (`sous report`), then `sous gate --ack-blocks`"
+    if pathless:
+        return "info", f"{pathless} block(s) since the fork were logged without a project dir " \
+            "(guard older than this sous); not counted", ""
+    return "ok", "no guard blocks here since the branch forked", ""
+
+
+@gate_check("doctor")
+def gate_doctor(c):
+    res = subprocess.run([sys.executable, os.path.realpath(__file__), "doctor", c.root],
+                         capture_output=True, text=True)
+    if res.returncode == 0:
+        return "ok", "no FAIL", ""
+    fails = [ln.strip().removeprefix("FAIL").strip() for ln in res.stdout.splitlines()
+             if ln.strip().startswith("FAIL")]
+    more = f" (+{len(fails) - 1} more)" if len(fails) > 1 else ""
+    return "fail", (fails[0] + more if fails else f"doctor exited {res.returncode}"), \
+        f"sous doctor {shlex.quote(c.root)}, and fix each FAIL"
+
+
+@gate_check("worktree-settings")
+def gate_worktree_settings(c):
+    main = c.worktrees[0] if c.worktrees else None
+    if not main or main["bare"]:
+        return "ok", "no main checkout to compare with", ""
+    if main["path"] == c.root:
+        return "ok", "this is the main checkout", ""
+    diffs = []
+    for rel in WORKTREE_HARNESS:
+        here, there = os.path.join(c.root, rel), os.path.join(main["path"], rel)
+        if os.path.isfile(there) and not os.path.isfile(here):
+            diffs.append(f"{rel} missing here")
+        elif os.path.isfile(here) and not os.path.isfile(there):
+            diffs.append(f"{rel} only here")
+        elif os.path.isfile(here) and not filecmp.cmp(here, there, shallow=False):
+            diffs.append(f"{rel} differs")
+    if diffs:
+        return "warn", f"harness differs from the main checkout {main['path']}: " + "; ".join(diffs), \
+            "compare them: a gitignored file (settings.local.json) is not checked out into a new worktree"
+    return "ok", "same harness files as the main checkout", ""
+
+
+@gate_check("scoped")
+def gate_scoped(c):
+    claims, note = scoped_claims()
+    if claims is None:
+        return ("skip" if "PATH" in note else "info"), note, ""
+    changed = {os.path.realpath(os.path.join(c.root, p)) for p in c.changed}
+    hits = [k for k in claims if os.path.realpath(k["file_path"]) in changed]
+    if hits:
+        k = hits[0]
+        sid = str(k.get("session_id", "?"))[:8]
+        more = f" (+{len(hits) - 1} more)" if len(hits) > 1 else ""
+        return "fail", f"{os.path.relpath(os.path.realpath(k['file_path']), c.root)} is claimed by " \
+            f"session {sid} (issue {k.get('issue_id', '?')}){more}", \
+            f"wait for that session to finish, or `scoped release {sid}`"
+    return "ok", f"no active claim on the {len(c.changed)} changed file(s)", ""
+
+
+@gate_check("receipts")
+def gate_receipts(c):
+    if not c.transcript:
+        return "skip", "no --transcript=FILE.jsonl: the final message's claims are not checked", ""
+    return receipts(c.transcript)
+
+
+# Receipts: the final message's test claims against the transcript's tool calls.
+# Claude Code doesn't document its transcript format; this reads what 2.1 writes
+# (tool_use / tool_result blocks, is_error, "Exit code N") and stays quiet when
+# unsure: only a clear mismatch fails. A claim with no recognised test command at
+# all only warns: a wrapper script or an earlier session may have run the tests.
+TEST_COMMAND = re.compile(
+    r"(^|[\s;&|(])(pytest|py\.test|tox|nox|unittest|(npm|pnpm|yarn|bun)( run)? test|jest|vitest|go test|"
+    r"cargo (test|nextest)|swift test|xcodebuild\b[^;&|]*\btest\b|make (test|check)|mvn (test|verify)|"
+    r"(\./)?gradlew? test|rspec|phpunit|ctest|[^\s;&|]*\.test\.sh)\b")
+CLAIM_PASS = re.compile(r"\b(all )?tests? (now )?(pass(es|ed|ing)?|(are )?green)\b|\ball green\b"
+                        r"|\bno (test )?failures\b", re.I)
+CLAIM_FIXED = re.compile(r"\bfixed\b", re.I)
+HEDGE = re.compile(r"\bnot\b|n't\b|\bno longer\b|\bnever\b|\bunverified\b|\bif\b|\bonce\b|\bwhen\b"
+                   r"|\bshould\b|\bwould\b|\bwill\b|\buntil\b", re.I)
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def claims_in(text, pattern):
+    """Unhedged matches of pattern: the clause before the match has no negation."""
+    out = []
+    for m in pattern.finditer(text):
+        clause = re.split(r"[.;:!?\n]", text[:m.start()])[-1]
+        if not HEDGE.search(clause):
+            out.append(m.group(0))
+    return out
+
+
+def receipts(path):
+    calls, results, final = [], {}, ""
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            msg = entry.get("message") if isinstance(entry, dict) else None
+            if entry.get("isSidechain") or not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+                continue  # a subagent's run is not this session's receipt
+            texts = []
+            for b in msg["content"]:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use":
+                    calls.append((b.get("id"), b.get("name"), (b.get("input") or {}).get("command") or ""))
+                elif b.get("type") == "tool_result":
+                    body = b.get("content")
+                    if isinstance(body, list):
+                        body = "\n".join(x.get("text", "") for x in body if isinstance(x, dict))
+                    results[b.get("tool_use_id")] = (bool(b.get("is_error")), str(body or ""))
+                elif b.get("type") == "text" and msg.get("role") == "assistant":
+                    texts.append(b.get("text") or "")
+            if texts:
+                final = "\n".join(texts)
+    last_run, tried, edited_after = None, None, False
+    for cid, name, cmd in calls:
+        if name in EDIT_TOOLS and last_run is not None:
+            edited_after = True
+        if name != "Bash" or not TEST_COMMAND.search(cmd) or cid not in results:
+            continue
+        is_error, body = results[cid]
+        code = re.match(r"Exit code (\d+)", body)
+        if "running in background" in body or (is_error and not code):
+            tried = cmd
+            continue  # never ran (a hook or a denial stopped it), or no exit status yet
+        last_run, edited_after = (cmd, int(code.group(1)) if code else 0), False
+    if not final:
+        return "info", "no final message in the transcript", ""
+    passed, fixed = claims_in(final, CLAIM_PASS), claims_in(final, CLAIM_FIXED)
+    claim = (passed or fixed or [""])[0]
+    fix = "run the tests and quote the summary, or take the claim back"
+    if passed and last_run is None and tried:
+        return "fail", f'final message says "{claim}" but the test command (`{tried}`) never ran ' \
+            "to completion (stopped, or sent to the background)", fix
+    if passed and last_run is None:
+        return "warn", f'final message says "{claim}" but no test command ran in this transcript', fix
+    if (passed or fixed) and last_run and last_run[1] != 0:
+        return "fail", f'final message says "{claim}" but the last test command (`{last_run[0]}`) ' \
+            f"exited {last_run[1]}", fix
+    if (passed or fixed) and edited_after:
+        return "warn", f'final message says "{claim}" but files were edited after the last test run', fix
+    if passed or (fixed and last_run):
+        return "ok", f'"{claim}" matches the last test run (`{last_run[0]}`, exit 0)', ""
+    if fixed:
+        return "info", f'final message says "{claim}"; no test run to check it against', ""
+    return "ok", "the final message claims no test result", ""
+
+
+GATE_LABEL = {"ok": "ok", "fail": "FAIL", "warn": "warn", "info": "info", "skip": "skip"}
+
+
+def gate(cwd, base, as_json, test_log, transcript, ack):
+    root = git(cwd, "rev-parse", "--show-toplevel")
+    if not root:
+        return usage(f"not inside a git working tree: {cwd}")
+    root = os.path.realpath(root)
+    if ack:
+        path = os.path.join(git(root, "rev-parse", "--absolute-git-dir"), GATE_ACK)
+        with open(path, "w") as f:
+            f.write(f"{int(time.time())}\n")
+        print(f"sous gate: guard blocks up to now marked reviewed for {root} ({path})")
+        return 0
+    ref = resolve_base(root, base)
+    if not ref:
+        return usage(f"base {base} is not a commit" if base else
+                     "no base branch found (origin/HEAD, main, master): pass --base REF")
+    if transcript and not os.path.isfile(transcript):
+        return usage(f"no such transcript: {transcript}")
+    c = GateContext(root, ref, test_log, transcript)
+    if not c.merge_base:
+        return usage(f"HEAD and {ref} share no history")
+    checks = []
+    for name, fn in GATE_CHECKS:
+        status, detail, fix = fn(c)
+        checks.append({"name": name, "status": status, "detail": detail, "fix": fix})
+    failed = [k["name"] for k in checks if k["status"] == "fail"]
+    if as_json:
+        print(json.dumps({"dir": root, "base": ref, "merge_base": c.merge_base, "safe": not failed,
+                          "checks": checks}, indent=2))
+        return 1 if failed else 0
+    print(f"sous gate {root}\n  base {ref}, forked at {c.merge_base[:10]}\n")
+    width = max(len(k["name"]) for k in checks)
+    for k in checks:
+        print(f"  {GATE_LABEL[k['status']]:<5} {k['name']:<{width}}  {k['detail']}")
+        if k["status"] in ("fail", "warn") and k["fix"]:
+            print(f"  {'':<5} {'':<{width}}  fix: {k['fix']}")
+    warned = sum(k["status"] == "warn" for k in checks)
+    print("\nsous gate: " + (f"not safe to merge ({', '.join(failed)} failed)" if failed else
+                             "safe to merge" + (f" ({warned} warning(s) to read)" if warned else "")))
+    return 1 if failed else 0
+
+
+def fleet(cwd, base, as_json):
+    if git(cwd, "rev-parse", "--git-dir") is None:
+        return usage(f"not inside a git repository: {cwd}")
+    rows, ref = worktrees(cwd), resolve_base(cwd, base)
+    if base and not ref:
+        return usage(f"base {base} is not a commit")
+    roots = [w["path"] for w in rows]
+    blocks = collections.Counter(owner(p, roots) for _, _, p in block_rows() if p)
+    claims, note = scoped_claims()
+    held = collections.Counter(owner(k["file_path"], roots) for k in claims or [])
+    for w in rows:
+        live = not (w["bare"] or w["prunable"]) and os.path.isdir(w["path"])
+        status = git(w["path"], "status", "--porcelain") if live else None
+        counts = (git(w["path"], "rev-list", "--left-right", "--count", f"{ref}...HEAD") or "").split() \
+            if live and ref else []
+        log = os.path.join(git(w["path"], "rev-parse", "--absolute-git-dir") or "", TEST_LOG) if live else ""
+        ran = tests_ran(log)[1] if log and os.path.isfile(log) else None
+        w.update(head=(w["head"] or "")[:10] or None, dirty=None if status is None else bool(status),
+                 behind=int(counts[0]) if len(counts) == 2 else None,
+                 ahead=int(counts[1]) if len(counts) == 2 else None,
+                 tests_ran=int(ran) if ran and ran.isdigit() else None,
+                 blocks=blocks.get(w["path"], 0), claims=None if claims is None else held.get(w["path"], 0))
+    if as_json:
+        print(json.dumps({"base": ref, "scoped": note or "on PATH", "worktrees": rows}, indent=2))
+        return 0
+    print(f"sous fleet {rows[0]['path'] if rows else cwd} "
+          f"(base {ref or 'none found'}; {note or 'scoped claims shown'})\n")
+    table = [("BRANCH", "STATE", "AHEAD/BEHIND", "TESTS", "BLOCKS", "CLAIMS", "PATH")]
+    for w in rows:
+        state = ("bare" if w["bare"] else "prunable" if w["prunable"] else "missing" if w["dirty"] is None
+                 else "dirty" if w["dirty"] else "clean")
+        table.append((w["branch"] or (f"({w['head']})" if w["head"] else "-"), state,
+                      "-" if w["ahead"] is None else f"+{w['ahead']}/-{w['behind']}",
+                      "no log" if w["tests_ran"] is None else f"{w['tests_ran']} ran",
+                      str(w["blocks"]), "-" if w["claims"] is None else str(w["claims"]), w["path"]))
+    widths = [max(len(r[i]) for r in table) for i in range(len(table[0]) - 1)]
+    for r in table:
+        print("  " + "  ".join(f"{v:<{widths[i]}}" for i, v in enumerate(r[:-1])) + "  " + r[-1])
+    return 0
+
+
+# Options each command accepts; a value-taking option is spelled --name=value
+# or --name value.
 OPTIONS = {
     "install": {"--ios", "--strict", "--dry-run"},
     "upgrade": {"--ios", "--strict", "--dry-run"},
@@ -1225,9 +1936,12 @@ OPTIONS = {
     "check": set(),
     "probe": {"--record"},
     "report": {"--days="},
+    "lint": {"--fix", "--dry-run"},
     "marketplace-check": {"--offline", "--timeout="},
+    "gate": {"--base=", "--json", "--test-log=", "--transcript=", "--ack-blocks"},
+    "fleet": {"--base=", "--json"},
 }
-NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check"}
+NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint", "gate", "fleet"}
 
 
 def usage(msg):
@@ -1245,13 +1959,18 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     if cmd not in OPTIONS:
         return usage(f"unknown command {cmd}")
-    opts, pos = {}, []
-    for a in rest:
+    opts, pos, args = {}, [], iter(rest)
+    for a in args:
         if a.startswith("-") and a != "-":
             name, eq, val = a.partition("=")
-            if name + eq not in OPTIONS[cmd]:
+            takes_value = name + "=" in OPTIONS[cmd]
+            if not takes_value and name + eq not in OPTIONS[cmd]:
                 return usage(f"`sous {cmd}` does not take {a}")
-            opts[name] = val if eq else True
+            if takes_value and not eq:
+                val = next(args, "")
+            if takes_value and not val:
+                return usage(f"{name} wants a value")
+            opts[name] = val if takes_value else True
         else:
             pos.append(a)
     if len(pos) > 1:
@@ -1270,6 +1989,13 @@ def main(argv):
         return doctor(root, ios, strict, cmd)
     if cmd == "check":
         return check(root)
+    if cmd == "lint":
+        return lint(root, bool(opts.get("--fix")), bool(opts.get("--dry-run")))
+    if cmd == "gate":
+        return gate(root, opts.get("--base"), bool(opts.get("--json")), opts.get("--test-log"),
+                    opts.get("--transcript"), bool(opts.get("--ack-blocks")))
+    if cmd == "fleet":
+        return fleet(root, opts.get("--base"), bool(opts.get("--json")))
     if cmd == "probe":
         if opts.get("--record"):
             if not os.path.isdir(root):
