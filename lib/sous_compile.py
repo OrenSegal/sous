@@ -65,7 +65,7 @@ def write_text_atomic(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".sous-", suffix=".tmp", dir=os.path.dirname(path))
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", newline="") as f:
             f.write(text)
         if os.path.exists(path):
             shutil.copymode(path, tmp)
@@ -92,7 +92,13 @@ def check_markers(rel, text):
 
 
 def block_re():
-    return re.compile(re.escape(COMPILE_BEGIN) + r".*?" + re.escape(COMPILE_END) + r"\n?", re.S)
+    return re.compile(re.escape(COMPILE_BEGIN) + r".*?" + re.escape(COMPILE_END) + r"(?:\r?\n)?", re.S)
+
+
+def read_text(path):
+    """The file's text with its line endings as they are (no newline translation)."""
+    with open(path, newline="") as f:
+        return f.read()
 
 
 def render(deny, target):
@@ -108,7 +114,9 @@ def write(root, target, body, n_rules):
     """Write body into the target; returns the message to print."""
     rel, owned = COMPILE_TARGETS[target]
     path = os.path.join(root, rel)
-    existing = open(path).read() if os.path.isfile(path) else ""
+    existing = read_text(path) if os.path.isfile(path) else ""
+    if "\r\n" in existing:
+        body = body.replace("\n", "\r\n")
     if owned and existing and COMPILE_BEGIN not in existing:
         raise MarkerError(f"{rel} exists and has no sous marker, so sous didn't write it; move it aside, then rerun")
     check_markers(rel, existing)
@@ -117,7 +125,8 @@ def write(root, target, body, n_rules):
     elif block_re().search(existing):
         new = block_re().sub(lambda _: body, existing, count=1)
     else:
-        new = existing.rstrip("\n") + "\n\n" + body
+        nl = "\r\n" if "\r\n" in existing else "\n"
+        new = existing.rstrip("\r\n") + nl + nl + body
     if new == existing:
         return f"{rel} is up to date"
     write_text_atomic(path, new)
@@ -130,15 +139,15 @@ def remove(root, target):
     path = os.path.join(root, rel)
     if not os.path.isfile(path):
         return f"sous compile: nothing at {rel}"
-    text = open(path).read()
+    text = read_text(path)
     check_markers(rel, text)
     if owned and COMPILE_BEGIN in text:
         os.remove(path)
         return f"removed {rel}"
     if block_re().search(text):
-        rest = block_re().sub("", text).strip("\n")
+        rest = block_re().sub("", text).strip("\r\n")
         if rest:
-            write_text_atomic(path, rest + "\n")
+            write_text_atomic(path, rest + ("\r\n" if "\r\n" in text else "\n"))
             return f"removed the sous block from {rel}"
         os.remove(path)
         return f"removed {rel} (only the sous block was in it)"
