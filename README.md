@@ -152,8 +152,9 @@ Doctor reads `.claude/settings.local.json` over `settings.json`, assuming lists
 add up and local scalars win. Claude Code's docs don't confirm that, so doctor
 says so when a local file is present.
 
-The guard appends each block to `~/.claude/sous/blocks.tsv` as a timestamp and
-a reason, never the command text (`SOUS_LOG=off` disables it). `sous report`
+The guard appends each block to `~/.claude/sous/blocks.tsv` as a timestamp, a
+reason and the project directory, never the command text (`SOUS_LOG=off`
+disables it). `sous report`
 counts blocks by reason: a false positive becomes a `check 0` row in
 `tests/adversarial.test.sh`, a bypass a `check 2` row, and a rule that never
 fires is a deletion candidate.
@@ -162,6 +163,34 @@ The sandbox is Claude Code's runtime, not a file, so only a live session can
 prove it. `sous probe` prints prompts to paste into a fresh session; once they
 all hold, `sous probe --record DIR` stores a fingerprint of the permissions and
 sandbox settings, and doctor notices when they change.
+
+## Gate and fleet
+
+`sous gate [DIR] [--base REF]` exits 0 only when the branch is safe to merge.
+Each check is named and prints a one-line fix: the tree is clean and pushed
+(as of the last fetch), the tests ran after the last edit (`tests-ran` on
+`<git dir>/sous-test.log`, or `--test-log` / `SOUS_TEST_LOG`), no test was
+weakened since the merge base (`tests-weakened`), the guard blocked nothing in
+this worktree since the branch forked, and doctor has no FAIL. Blocks you
+reviewed stay acknowledged after `sous gate --ack-blocks`. A linked worktree
+whose `.claude` settings or `.mcp.json` differ from the main checkout's gets a
+warning: a gitignored `settings.local.json` is not checked out into a new
+worktree. With [scoped](https://github.com/OrenSegal/scoped) on `PATH`, a
+changed file another session claims fails the gate. `--json` prints the same
+checks.
+
+`--transcript=FILE.jsonl` also compares the session's final message with its
+tool calls. "Tests pass" or "fixed" fails when the last test command exited
+non-zero, or when the test command was stopped or sent to the background and
+never finished; a claim with no test command in the transcript only warns (a
+wrapper script may have run them). It reads Claude Code's transcript format,
+which is not published, and only recognises common test runners and plain
+claims; a hedged or unusual claim passes unchecked.
+
+`sous fleet [DIR]` lists every worktree of the repo, read-only: branch,
+dirty, ahead/behind the base, how many tests the last log ran, guard blocks
+under that path, and scoped claims. Bare, detached and prunable worktrees are
+listed without reading a working tree they lack.
 
 ## Why a hook when there are deny rules
 

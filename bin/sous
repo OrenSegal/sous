@@ -22,6 +22,13 @@ Usage:
   sous report    [--days=N]                            what the guard blocked, and how to tune it
   sous lint      [DIR] [--fix] [--dry-run]             "never X" lines in CLAUDE.md / AGENTS.md that no deny rule
                                                        or guard rule enforces; --fix adds them as deny rules
+  sous gate      [DIR] [--base REF] [--json] [--test-log=FILE] [--transcript=FILE.jsonl]
+                                                       exit 0 only when the branch is safe to merge:
+                                                       clean, pushed, tests ran and not weakened, no
+                                                       unreviewed guard blocks, doctor passes;
+                                                       --ack-blocks marks this worktree's blocks reviewed
+  sous fleet     [DIR] [--base REF] [--json]           every worktree of the repo: branch, dirty,
+                                                       ahead/behind, tests ran, blocks, scoped claims
   sous marketplace-check [REPO] [--offline] [--timeout=S]
                                                        verify each pinned plugin ref resolves to its sha
   sous --version
@@ -1421,17 +1428,27 @@ def guard_latency_ms(hook, bash="bash"):
     return best
 
 
-def read_blocks(days):
+def block_rows():
+    """(epoch, reason, project dir or None) per guard block. Rows from a guard
+    before the third column have no directory."""
     if BLOCK_LOG == "off" or not os.path.isfile(BLOCK_LOG):
         return []
-    cutoff = time.time() - days * 86400
     out = []
     with open(BLOCK_LOG, errors="replace") as f:
         for line in f:
-            ts, _, reason = line.rstrip("\n").partition("\t")
-            if ts.isdigit() and int(ts) >= cutoff and reason:
-                out.append(reason.replace("BLOCKED (sous): ", "").split(".")[0])
+            cols = line.rstrip("\n").split("\t")
+            if len(cols) >= 2 and cols[0].isdigit() and cols[1]:
+                out.append((int(cols[0]), cols[1], cols[2] if len(cols) > 2 and cols[2] else None))
     return out
+
+
+def short_reason(reason):
+    return reason.replace("BLOCKED (sous): ", "").split(".")[0]
+
+
+def read_blocks(days):
+    cutoff = time.time() - days * 86400
+    return [short_reason(reason) for ts, reason, _ in block_rows() if ts >= cutoff]
 
 
 def report(days):
@@ -1478,7 +1495,438 @@ doctor --strict asks for a fresh probe whenever permissions or sandbox change.
 """
 
 
-# Options each command accepts; a value-taking option is spelled --name=value.
+# --- gate and fleet: git worktrees, the block log, test logs ----------------
+
+TESTS_RAN = os.path.join(SOUS_ROOT, "bin", "tests-ran")
+TESTS_WEAKENED = os.path.join(SOUS_ROOT, "bin", "tests-weakened")
+GATE_ACK = "sous-gate-ack"      # in the worktree's git dir: when blocks were last reviewed
+TEST_LOG = "sous-test.log"      # in the worktree's git dir, unless --test-log or SOUS_TEST_LOG
+# A linked worktree checks out tracked files only; these can silently differ from
+# the main checkout's (settings.local.json is usually gitignored, so it is absent).
+WORKTREE_HARNESS = [".claude/settings.json", ".claude/settings.local.json", ".mcp.json",
+                    ".claude/hooks/sous-guard.sh"]
+
+
+def git(cwd, *args):
+    """git's stdout without the trailing newline, or None when it fails. Never
+    takes optional locks, so a status doesn't refresh (write) the index."""
+    try:
+        res = subprocess.run(["git", "--no-optional-locks", "-C", cwd, *args],
+                             capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return res.stdout.rstrip("\n") if res.returncode == 0 else None
+
+
+def worktrees(cwd):
+    """`git worktree list --porcelain` as dicts; the main worktree comes first.
+    -z (git 2.36+) keeps a newline in a path whole; older git splits on lines."""
+    out = git(cwd, "worktree", "list", "--porcelain", "-z")
+    sep = "\0"
+    if out is None:
+        out, sep = git(cwd, "worktree", "list", "--porcelain"), "\n"
+    rows, cur = [], None
+    for field in (out or "").split(sep):
+        if not field:
+            cur = None
+            continue
+        key, _, val = field.partition(" ")
+        if key == "worktree":
+            cur = {"path": os.path.realpath(val), "head": None, "branch": None,
+                   "bare": False, "detached": False, "locked": False, "prunable": False}
+            rows.append(cur)
+        elif cur is not None:
+            if key == "HEAD":
+                cur["head"] = val
+            elif key == "branch":
+                cur["branch"] = val.removeprefix("refs/heads/")
+            elif key in ("bare", "detached", "locked", "prunable"):
+                cur[key] = True
+    return rows
+
+
+def owner(path, roots):
+    """The innermost of roots that contains path (worktrees can nest), or None."""
+    p = os.path.realpath(path)
+    hits = [r for r in roots if p == r or p.startswith(r.rstrip(os.sep) + os.sep)]
+    return max(hits, key=len) if hits else None
+
+
+def resolve_base(cwd, base):
+    """The base ref to compare against: --base, else origin/HEAD, main, master."""
+    for ref in [base] if base else ["origin/HEAD", "main", "master", "origin/main", "origin/master"]:
+        if git(cwd, "rev-parse", "--verify", "--quiet", ref + "^{commit}"):
+            return ref
+    return None
+
+
+def tests_ran(log, minimum=None):
+    """bin/tests-ran on log: (exit code, its message). With no minimum, the count."""
+    if minimum is None:
+        res = subprocess.run(["bash", "-c", '. "$1"; tests_ran_count "$2"', "_", TESTS_RAN, log],
+                             capture_output=True, text=True)
+        return res.returncode, res.stdout.strip()
+    res = subprocess.run(["bash", TESTS_RAN, "--min", str(minimum), log], capture_output=True, text=True)
+    return res.returncode, (res.stdout + res.stderr).strip()
+
+
+def scoped_claims():
+    """(claims, note): scoped's active claims, or None and why there are none to read.
+    scoped is optional: absent or failing, nothing here fails because of it."""
+    exe = shutil.which("scoped")
+    if not exe:
+        return None, "scoped not on PATH"
+    try:
+        res = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=20)
+        claims = json.loads(res.stdout).get("claims") if res.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        claims = None
+    if not isinstance(claims, list):
+        return None, "scoped status --json gave no claims list"
+    return [c for c in claims if isinstance(c, dict) and isinstance(c.get("file_path"), str)], ""
+
+
+class GateContext:
+    """What every gate check reads: the worktree, the base, and the branch's changes."""
+
+    def __init__(self, root, base, test_log, transcript):
+        self.root, self.base, self.transcript = root, base, transcript
+        self.merge_base = git(root, "merge-base", base, "HEAD")
+        self.forked_at = int(git(root, "show", "-s", "--format=%ct", self.merge_base) or 0)
+        self.git_dir = git(root, "rev-parse", "--absolute-git-dir")
+        self.test_log = os.path.abspath(test_log or os.environ.get("SOUS_TEST_LOG")
+                                        or os.path.join(self.git_dir, TEST_LOG))
+        self.worktrees = worktrees(root)
+        diff = git(root, "diff", "--name-only", "-z", self.merge_base, "--") or ""
+        new = git(root, "ls-files", "--others", "--exclude-standard", "-z") or ""
+        self.changed = sorted({p for p in (diff + "\0" + new).split("\0") if p})
+
+
+GATE_CHECKS = []
+
+
+def gate_check(name):
+    """Register fn(ctx) -> (status, detail, fix) as a gate check. status is ok,
+    fail, warn, info or skip; only fail blocks the merge. A new check is one
+    decorated function: the verdict, the text and the JSON come from this list."""
+    def register(fn):
+        GATE_CHECKS.append((name, fn))
+        return fn
+    return register
+
+
+@gate_check("clean")
+def gate_clean(c):
+    out = git(c.root, "status", "--porcelain")
+    if out is None:
+        return "fail", "git status failed", "run `git status` and fix what it reports"
+    if out:
+        lines = out.splitlines()
+        return "fail", f"{len(lines)} uncommitted or untracked path(s), e.g. {lines[0][3:]}", \
+            "commit or stash them (`git status` lists them)"
+    return "ok", "working tree clean", ""
+
+
+@gate_check("pushed")
+def gate_pushed(c):
+    branch = git(c.root, "symbolic-ref", "--short", "-q", "HEAD")
+    if not branch:
+        return "fail", "detached HEAD: no branch to merge", "check out a branch, then push it"
+    up = git(c.root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if not up:
+        return "fail", f"{branch} has no upstream", f"git push -u origin {branch}"
+    ahead = git(c.root, "rev-list", "--count", "@{u}..HEAD") or "0"
+    if ahead != "0":
+        return "fail", f"{ahead} commit(s) on {branch} not pushed to {up}", "git push"
+    return "ok", f"{branch} pushed to {up} (as of the last fetch)", ""
+
+
+@gate_check("tests-ran")
+def gate_tests_ran(c):
+    fix = f'run the tests again: <test command> 2>&1 | tee "{c.test_log}"'
+    if not os.path.isfile(c.test_log):
+        return "fail", f"no test log at {c.test_log}", fix
+    rc, msg = tests_ran(c.test_log, 1)
+    if rc != 0:
+        return "fail", msg.splitlines()[-1] if msg else f"tests-ran exited {rc}", fix
+    logged = os.path.getmtime(c.test_log)
+    for rel in c.changed:
+        p = os.path.join(c.root, rel)
+        if os.path.isfile(p) and os.path.realpath(p) != os.path.realpath(c.test_log) \
+                and os.path.getmtime(p) > logged:
+            return "fail", f"the log is older than {rel}: edited after the run", fix
+    return "ok", f"{msg.removeprefix('tests-ran: ')}, after the last edit ({c.test_log})", ""
+
+
+@gate_check("tests-weakened")
+def gate_tests_weakened(c):
+    res = subprocess.run(["bash", TESTS_WEAKENED, c.merge_base], cwd=c.root, capture_output=True, text=True)
+    if res.returncode == 0:
+        return "ok", f"no test deleted, skipped or loosened since {c.base}", ""
+    if res.returncode == 1:
+        found = res.stdout.strip().splitlines()
+        more = f" (+{len(found) - 1} more: `tests-weakened {c.base}`)" if len(found) > 1 else ""
+        return "fail", found[0] + more, "restore the test, or show in the PR why the change is right"
+    return "fail", (res.stderr.strip() or f"tests-weakened exited {res.returncode}"), \
+        f"run `tests-weakened {c.base}` in {c.root}"
+
+
+@gate_check("blocks")
+def gate_blocks(c):
+    if BLOCK_LOG == "off":
+        return "skip", "SOUS_LOG=off: no block log", ""
+    try:
+        with open(os.path.join(c.git_dir, GATE_ACK)) as f:
+            acked = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        acked = 0
+    roots = [w["path"] for w in c.worktrees]
+    rows = [(ts, r, p) for ts, r, p in block_rows() if ts >= c.forked_at]
+    mine = [short_reason(r) for ts, r, p in rows if p and ts > acked and owner(p, roots) == c.root]
+    pathless = sum(1 for _, _, p in rows if not p)
+    if mine:
+        top = ", ".join(f"{r} x{n}" for r, n in collections.Counter(mine).most_common(3))
+        return "fail", f"{len(mine)} guard block(s) here since the branch forked: {top}", \
+            "review each (`sous report`), then `sous gate --ack-blocks`"
+    if pathless:
+        return "info", f"{pathless} block(s) since the fork were logged without a project dir " \
+            "(guard older than this sous); not counted", ""
+    return "ok", "no guard blocks here since the branch forked", ""
+
+
+@gate_check("doctor")
+def gate_doctor(c):
+    res = subprocess.run([sys.executable, os.path.realpath(__file__), "doctor", c.root],
+                         capture_output=True, text=True)
+    if res.returncode == 0:
+        return "ok", "no FAIL", ""
+    fails = [ln.strip().removeprefix("FAIL").strip() for ln in res.stdout.splitlines()
+             if ln.strip().startswith("FAIL")]
+    more = f" (+{len(fails) - 1} more)" if len(fails) > 1 else ""
+    return "fail", (fails[0] + more if fails else f"doctor exited {res.returncode}"), \
+        f"sous doctor {shlex.quote(c.root)}, and fix each FAIL"
+
+
+@gate_check("worktree-settings")
+def gate_worktree_settings(c):
+    main = c.worktrees[0] if c.worktrees else None
+    if not main or main["bare"]:
+        return "ok", "no main checkout to compare with", ""
+    if main["path"] == c.root:
+        return "ok", "this is the main checkout", ""
+    diffs = []
+    for rel in WORKTREE_HARNESS:
+        here, there = os.path.join(c.root, rel), os.path.join(main["path"], rel)
+        if os.path.isfile(there) and not os.path.isfile(here):
+            diffs.append(f"{rel} missing here")
+        elif os.path.isfile(here) and not os.path.isfile(there):
+            diffs.append(f"{rel} only here")
+        elif os.path.isfile(here) and not filecmp.cmp(here, there, shallow=False):
+            diffs.append(f"{rel} differs")
+    if diffs:
+        return "warn", f"harness differs from the main checkout {main['path']}: " + "; ".join(diffs), \
+            "compare them: a gitignored file (settings.local.json) is not checked out into a new worktree"
+    return "ok", "same harness files as the main checkout", ""
+
+
+@gate_check("scoped")
+def gate_scoped(c):
+    claims, note = scoped_claims()
+    if claims is None:
+        return ("skip" if "PATH" in note else "info"), note, ""
+    changed = {os.path.realpath(os.path.join(c.root, p)) for p in c.changed}
+    hits = [k for k in claims if os.path.realpath(k["file_path"]) in changed]
+    if hits:
+        k = hits[0]
+        sid = str(k.get("session_id", "?"))[:8]
+        more = f" (+{len(hits) - 1} more)" if len(hits) > 1 else ""
+        return "fail", f"{os.path.relpath(os.path.realpath(k['file_path']), c.root)} is claimed by " \
+            f"session {sid} (issue {k.get('issue_id', '?')}){more}", \
+            f"wait for that session to finish, or `scoped release {sid}`"
+    return "ok", f"no active claim on the {len(c.changed)} changed file(s)", ""
+
+
+@gate_check("receipts")
+def gate_receipts(c):
+    if not c.transcript:
+        return "skip", "no --transcript=FILE.jsonl: the final message's claims are not checked", ""
+    return receipts(c.transcript)
+
+
+# Receipts: the final message's test claims against the transcript's tool calls.
+# Claude Code doesn't document its transcript format; this reads what 2.1 writes
+# (tool_use / tool_result blocks, is_error, "Exit code N") and stays quiet when
+# unsure: only a clear mismatch fails. A claim with no recognised test command at
+# all only warns: a wrapper script or an earlier session may have run the tests.
+TEST_COMMAND = re.compile(
+    r"(^|[\s;&|(])(pytest|py\.test|tox|nox|unittest|(npm|pnpm|yarn|bun)( run)? test|jest|vitest|go test|"
+    r"cargo (test|nextest)|swift test|xcodebuild\b[^;&|]*\btest\b|make (test|check)|mvn (test|verify)|"
+    r"(\./)?gradlew? test|rspec|phpunit|ctest|[^\s;&|]*\.test\.sh)\b")
+CLAIM_PASS = re.compile(r"\b(all )?tests? (now )?(pass(es|ed|ing)?|(are )?green)\b|\ball green\b"
+                        r"|\bno (test )?failures\b", re.I)
+CLAIM_FIXED = re.compile(r"\bfixed\b", re.I)
+HEDGE = re.compile(r"\bnot\b|n't\b|\bno longer\b|\bnever\b|\bunverified\b|\bif\b|\bonce\b|\bwhen\b"
+                   r"|\bshould\b|\bwould\b|\bwill\b|\buntil\b", re.I)
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def claims_in(text, pattern):
+    """Unhedged matches of pattern: the clause before the match has no negation."""
+    out = []
+    for m in pattern.finditer(text):
+        clause = re.split(r"[.;:!?\n]", text[:m.start()])[-1]
+        if not HEDGE.search(clause):
+            out.append(m.group(0))
+    return out
+
+
+def receipts(path):
+    calls, results, final = [], {}, ""
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            msg = entry.get("message") if isinstance(entry, dict) else None
+            if entry.get("isSidechain") or not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+                continue  # a subagent's run is not this session's receipt
+            texts = []
+            for b in msg["content"]:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use":
+                    calls.append((b.get("id"), b.get("name"), (b.get("input") or {}).get("command") or ""))
+                elif b.get("type") == "tool_result":
+                    body = b.get("content")
+                    if isinstance(body, list):
+                        body = "\n".join(x.get("text", "") for x in body if isinstance(x, dict))
+                    results[b.get("tool_use_id")] = (bool(b.get("is_error")), str(body or ""))
+                elif b.get("type") == "text" and msg.get("role") == "assistant":
+                    texts.append(b.get("text") or "")
+            if texts:
+                final = "\n".join(texts)
+    last_run, tried, edited_after = None, None, False
+    for cid, name, cmd in calls:
+        if name in EDIT_TOOLS and last_run is not None:
+            edited_after = True
+        if name != "Bash" or not TEST_COMMAND.search(cmd) or cid not in results:
+            continue
+        is_error, body = results[cid]
+        code = re.match(r"Exit code (\d+)", body)
+        if "running in background" in body or (is_error and not code):
+            tried = cmd
+            continue  # never ran (a hook or a denial stopped it), or no exit status yet
+        last_run, edited_after = (cmd, int(code.group(1)) if code else 0), False
+    if not final:
+        return "info", "no final message in the transcript", ""
+    passed, fixed = claims_in(final, CLAIM_PASS), claims_in(final, CLAIM_FIXED)
+    claim = (passed or fixed or [""])[0]
+    fix = "run the tests and quote the summary, or take the claim back"
+    if passed and last_run is None and tried:
+        return "fail", f'final message says "{claim}" but the test command (`{tried}`) never ran ' \
+            "to completion (stopped, or sent to the background)", fix
+    if passed and last_run is None:
+        return "warn", f'final message says "{claim}" but no test command ran in this transcript', fix
+    if (passed or fixed) and last_run and last_run[1] != 0:
+        return "fail", f'final message says "{claim}" but the last test command (`{last_run[0]}`) ' \
+            f"exited {last_run[1]}", fix
+    if (passed or fixed) and edited_after:
+        return "warn", f'final message says "{claim}" but files were edited after the last test run', fix
+    if passed or (fixed and last_run):
+        return "ok", f'"{claim}" matches the last test run (`{last_run[0]}`, exit 0)', ""
+    if fixed:
+        return "info", f'final message says "{claim}"; no test run to check it against', ""
+    return "ok", "the final message claims no test result", ""
+
+
+GATE_LABEL = {"ok": "ok", "fail": "FAIL", "warn": "warn", "info": "info", "skip": "skip"}
+
+
+def gate(cwd, base, as_json, test_log, transcript, ack):
+    root = git(cwd, "rev-parse", "--show-toplevel")
+    if not root:
+        return usage(f"not inside a git working tree: {cwd}")
+    root = os.path.realpath(root)
+    if ack:
+        path = os.path.join(git(root, "rev-parse", "--absolute-git-dir"), GATE_ACK)
+        with open(path, "w") as f:
+            f.write(f"{int(time.time())}\n")
+        print(f"sous gate: guard blocks up to now marked reviewed for {root} ({path})")
+        return 0
+    ref = resolve_base(root, base)
+    if not ref:
+        return usage(f"base {base} is not a commit" if base else
+                     "no base branch found (origin/HEAD, main, master): pass --base REF")
+    if transcript and not os.path.isfile(transcript):
+        return usage(f"no such transcript: {transcript}")
+    c = GateContext(root, ref, test_log, transcript)
+    if not c.merge_base:
+        return usage(f"HEAD and {ref} share no history")
+    checks = []
+    for name, fn in GATE_CHECKS:
+        status, detail, fix = fn(c)
+        checks.append({"name": name, "status": status, "detail": detail, "fix": fix})
+    failed = [k["name"] for k in checks if k["status"] == "fail"]
+    if as_json:
+        print(json.dumps({"dir": root, "base": ref, "merge_base": c.merge_base, "safe": not failed,
+                          "checks": checks}, indent=2))
+        return 1 if failed else 0
+    print(f"sous gate {root}\n  base {ref}, forked at {c.merge_base[:10]}\n")
+    width = max(len(k["name"]) for k in checks)
+    for k in checks:
+        print(f"  {GATE_LABEL[k['status']]:<5} {k['name']:<{width}}  {k['detail']}")
+        if k["status"] in ("fail", "warn") and k["fix"]:
+            print(f"  {'':<5} {'':<{width}}  fix: {k['fix']}")
+    warned = sum(k["status"] == "warn" for k in checks)
+    print("\nsous gate: " + (f"not safe to merge ({', '.join(failed)} failed)" if failed else
+                             "safe to merge" + (f" ({warned} warning(s) to read)" if warned else "")))
+    return 1 if failed else 0
+
+
+def fleet(cwd, base, as_json):
+    if git(cwd, "rev-parse", "--git-dir") is None:
+        return usage(f"not inside a git repository: {cwd}")
+    rows, ref = worktrees(cwd), resolve_base(cwd, base)
+    if base and not ref:
+        return usage(f"base {base} is not a commit")
+    roots = [w["path"] for w in rows]
+    blocks = collections.Counter(owner(p, roots) for _, _, p in block_rows() if p)
+    claims, note = scoped_claims()
+    held = collections.Counter(owner(k["file_path"], roots) for k in claims or [])
+    for w in rows:
+        live = not (w["bare"] or w["prunable"]) and os.path.isdir(w["path"])
+        status = git(w["path"], "status", "--porcelain") if live else None
+        counts = (git(w["path"], "rev-list", "--left-right", "--count", f"{ref}...HEAD") or "").split() \
+            if live and ref else []
+        log = os.path.join(git(w["path"], "rev-parse", "--absolute-git-dir") or "", TEST_LOG) if live else ""
+        ran = tests_ran(log)[1] if log and os.path.isfile(log) else None
+        w.update(head=(w["head"] or "")[:10] or None, dirty=None if status is None else bool(status),
+                 behind=int(counts[0]) if len(counts) == 2 else None,
+                 ahead=int(counts[1]) if len(counts) == 2 else None,
+                 tests_ran=int(ran) if ran and ran.isdigit() else None,
+                 blocks=blocks.get(w["path"], 0), claims=None if claims is None else held.get(w["path"], 0))
+    if as_json:
+        print(json.dumps({"base": ref, "scoped": note or "on PATH", "worktrees": rows}, indent=2))
+        return 0
+    print(f"sous fleet {rows[0]['path'] if rows else cwd} "
+          f"(base {ref or 'none found'}; {note or 'scoped claims shown'})\n")
+    table = [("BRANCH", "STATE", "AHEAD/BEHIND", "TESTS", "BLOCKS", "CLAIMS", "PATH")]
+    for w in rows:
+        state = ("bare" if w["bare"] else "prunable" if w["prunable"] else "missing" if w["dirty"] is None
+                 else "dirty" if w["dirty"] else "clean")
+        table.append((w["branch"] or (f"({w['head']})" if w["head"] else "-"), state,
+                      "-" if w["ahead"] is None else f"+{w['ahead']}/-{w['behind']}",
+                      "no log" if w["tests_ran"] is None else f"{w['tests_ran']} ran",
+                      str(w["blocks"]), "-" if w["claims"] is None else str(w["claims"]), w["path"]))
+    widths = [max(len(r[i]) for r in table) for i in range(len(table[0]) - 1)]
+    for r in table:
+        print("  " + "  ".join(f"{v:<{widths[i]}}" for i, v in enumerate(r[:-1])) + "  " + r[-1])
+    return 0
+
+
+# Options each command accepts; a value-taking option is spelled --name=value
+# or --name value.
 OPTIONS = {
     "install": {"--ios", "--strict", "--dry-run"},
     "upgrade": {"--ios", "--strict", "--dry-run"},
@@ -1490,8 +1938,10 @@ OPTIONS = {
     "report": {"--days="},
     "lint": {"--fix", "--dry-run"},
     "marketplace-check": {"--offline", "--timeout="},
+    "gate": {"--base=", "--json", "--test-log=", "--transcript=", "--ack-blocks"},
+    "fleet": {"--base=", "--json"},
 }
-NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint"}
+NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint", "gate", "fleet"}
 
 
 def usage(msg):
@@ -1509,13 +1959,18 @@ def main(argv):
     cmd, rest = argv[0], argv[1:]
     if cmd not in OPTIONS:
         return usage(f"unknown command {cmd}")
-    opts, pos = {}, []
-    for a in rest:
+    opts, pos, args = {}, [], iter(rest)
+    for a in args:
         if a.startswith("-") and a != "-":
             name, eq, val = a.partition("=")
-            if name + eq not in OPTIONS[cmd]:
+            takes_value = name + "=" in OPTIONS[cmd]
+            if not takes_value and name + eq not in OPTIONS[cmd]:
                 return usage(f"`sous {cmd}` does not take {a}")
-            opts[name] = val if eq else True
+            if takes_value and not eq:
+                val = next(args, "")
+            if takes_value and not val:
+                return usage(f"{name} wants a value")
+            opts[name] = val if takes_value else True
         else:
             pos.append(a)
     if len(pos) > 1:
@@ -1536,6 +1991,11 @@ def main(argv):
         return check(root)
     if cmd == "lint":
         return lint(root, bool(opts.get("--fix")), bool(opts.get("--dry-run")))
+    if cmd == "gate":
+        return gate(root, opts.get("--base"), bool(opts.get("--json")), opts.get("--test-log"),
+                    opts.get("--transcript"), bool(opts.get("--ack-blocks")))
+    if cmd == "fleet":
+        return fleet(root, opts.get("--base"), bool(opts.get("--json")))
     if cmd == "probe":
         if opts.get("--record"):
             if not os.path.isdir(root):

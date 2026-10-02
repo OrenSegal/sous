@@ -37,6 +37,11 @@ jobs:
       - name: install + doctor on bash 3.2 (macOS system bash)
         if: runner.os == 'macOS'
         run: /bin/bash tests/install.test.sh
+      - name: gate and fleet on throwaway repos and worktrees
+        run: bash tests/gate.test.sh && bash tests/fleet.test.sh
+      - name: gate and fleet on bash 3.2 (macOS system bash)
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/gate.test.sh && /bin/bash tests/fleet.test.sh
       - name: python syntax
         run: python3 -m py_compile bin/sous
       - name: validate plugin
