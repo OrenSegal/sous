@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- litmus is retired from the marketplace and the toolkit table: its deterministic assertions can pass when they could never fail, and `claude plugin eval` covers the rest.
 - New `sous lint [DIR] [--fix] [--dry-run]`: lists written prohibitions in `CLAUDE.md` / `AGENTS.md` that no rule or guard check enforces; `--fix` adds deny rules through the manifest. It reads every prohibition on a line, not the alternative after "use X instead" or "never skip X", and needs an `Edit` rule (not only a `Read` rule) to call "never edit" enforced.
 - New `bin/tests-weakened`: flags a diff that deletes, skips or loosens tests (heuristic). It reads a diff on stdin, or diffs from the merge base with a ref, so tests the base gained later don't read as deleted; an unknown ref exits 2.
 - `probe --record` also fingerprints `.mcp.json` servers and enabled plugins; doctor notes drift (`--strict` fails) and names servers run by `npx`, `bunx`, `pnpx`, `uvx` or `pipx` without a version pin, or over plain http.
