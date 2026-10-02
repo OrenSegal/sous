@@ -1252,7 +1252,11 @@ def compile_rules(root, target, write, remove):
     if target not in sous_compile.COMPILE_TARGETS:
         return usage(f"--to wants one of {', '.join(sorted(sous_compile.COMPILE_TARGETS))}, got {target!r}")
     if remove:
-        print(sous_compile.remove(root, target))
+        try:
+            print(sous_compile.remove(root, target))
+        except sous_compile.MarkerError as e:
+            print(f"sous compile: {e}", file=sys.stderr)
+            return 1
         return 0
     settings_path = os.path.join(root, ".claude", "settings.json")
     local_path = os.path.join(root, ".claude", "settings.local.json")
@@ -1270,7 +1274,11 @@ def compile_rules(root, target, write, remove):
     if not write:
         print(body, end="")
         return 0
-    print(sous_compile.write(root, target, body, len(deny)))
+    try:
+        print(sous_compile.write(root, target, body, len(deny)))
+    except sous_compile.MarkerError as e:
+        print(f"sous compile: {e}", file=sys.stderr)
+        return 1
     return 0
 
 
