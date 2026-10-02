@@ -209,7 +209,8 @@ _sous_match() {
   fi
   # Word-split each segment with globbing off, so `.env*` stays text instead of
   # expanding against the cwd (bash 3.2 has no `local -`, so restore by hand).
-  local had_noglob=0
+  # Each block below sets $reason and breaks out, so -f is restored in one place.
+  local had_noglob=0 reason=""
   case $- in *f*) had_noglob=1 ;; esac
   set -f
   while IFS= read -r seg; do
@@ -243,10 +244,8 @@ _sous_match() {
     if (( has_interp )) && [[ $seg =~ $re_api ]]; then
       case $first in
         grep|egrep|fgrep|rg|ag|ack|git|echo|printf|sed|awk|cat|less|head|tail|wc|ls|find) ;;
-        *)
-          echo "BLOCKED (sous): recursive delete through an interpreter (rmtree, rm_rf, rmSync recursive). Name the files, or ask the user."
-          [ $had_noglob = 1 ] || set +f
-          return 1 ;;
+        *) reason="recursive delete through an interpreter (rmtree, rm_rf, rmSync recursive). Name the files, or ask the user."
+           break ;;
       esac
     fi
     [[ $first =~ $allow_re ]] && continue
@@ -257,9 +256,8 @@ _sous_match() {
       for cand in .ssh .aws .gnupg; do
         # shellcheck disable=SC2053  # $low is a pattern on purpose: ~/.s* reaches .ssh
         if [[ $cand == $low ]]; then
-          echo "BLOCKED (sous): reading ~/$cand credentials. Ask the user."
-          [ $had_noglob = 1 ] || set +f
-          return 1
+          reason="reading ~/$cand credentials. Ask the user."
+          break 3
         fi
       done
     done
@@ -271,9 +269,8 @@ _sous_match() {
       case "$low" in
         *.example|*.sample|*.template|*.dist) continue ;;
       esac
-      echo "BLOCKED (sous): $first touches $tok, a secrets file. Read .env.example for the key names."
-      [ $had_noglob = 1 ] || set +f
-      return 1
+      reason="$first touches $tok, a secrets file. Read .env.example for the key names."
+      break 2
     done
     # A glob that starts with a dot reaches dotfiles: .e*, .[e]nv, .?nv, .*
     for tok in $seg; do
@@ -285,14 +282,17 @@ _sous_match() {
       for cand in .env .env.local .envrc .env.production .env.development; do
         # shellcheck disable=SC2053  # $low is the user's glob, matched on purpose
         if [[ $cand == $low ]]; then
-          echo "BLOCKED (sous): $first $tok reaches $cand, a secrets file. Read .env.example for the key names."
-          [ $had_noglob = 1 ] || set +f
-          return 1
+          reason="$first $tok reaches $cand, a secrets file. Read .env.example for the key names."
+          break 3
         fi
       done
     done
   done <<< "$segs"
   [ $had_noglob = 1 ] || set +f
+  if [[ -n $reason ]]; then
+    echo "BLOCKED (sous): $reason"
+    return 1
+  fi
 
   # 7. Building a command out of sight: decode or fetch, then run it.
   #    A pipe (not ||) into a shell, through sudo/env/VAR=, or a fetch piped into

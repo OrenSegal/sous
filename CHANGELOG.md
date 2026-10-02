@@ -9,14 +9,11 @@ Guard (`hooks/sous-guard.sh`):
 - Carries `SOUS_GUARD_VERSION`, so doctor can tell an old copy from an edited one.
 
 `sous`:
-- New `uninstall [DIR] [--dry-run]`. It is backed by `.claude/sous.manifest.json`, removes only what install recorded adding, and restores values `--strict` overrode.
-- New `upgrade` (install under another name).
-- New `marketplace-check [REPO] [--offline] [--timeout=S]`. It checks that each pinned ref resolves to its sha with `git ls-remote`, and exits 75 when the network is unreachable.
+- New `uninstall [DIR] [--dry-run]`, backed by `.claude/sous.manifest.json`: it removes only what install recorded adding and restores values `--strict` overrode. `upgrade` is install under another name.
+- New `marketplace-check [REPO] [--offline] [--timeout=S]`: each pinned ref must resolve to its sha (`git ls-remote`); exit 75 when the network is unreachable.
 - New `probe --record DIR`, which notes that the live probe held for the current settings.
-- New `--version`.
-- Settings parse defensively: JSONC is read but not rewritten, and a BOM, a broken file or a non-object top level gives a message instead of a traceback.
-- Writes are atomic and follow symlinks.
-- Unknown flags exit 64.
+- New `--version`, read from `plugin.json`, the one place the version is written.
+- Settings parse defensively: JSONC is read but not rewritten, and a BOM, a broken file or a non-object top level gives a message instead of a traceback. Writes are atomic and follow symlinks. Unknown flags exit 64.
 
 Doctor:
 - Layers `settings.local.json` over `settings.json`.
@@ -27,8 +24,9 @@ Doctor:
 - The table cache key covers bash and jq, its contents are validated, and CI ignores it by default (`SOUS_TABLE_CACHE`).
 
 Repo:
+- The README opens with the toolkit table (sous, litmus, cited, scoped), and tests keep it, the marketplace description, the demo capture and the version in step.
 - CI adds ruff, `plugin validate` for skills, and a marketplace job that warns, not fails, on network errors.
-- Adds a release workflow, CONTRIBUTING, a code of conduct, issue and PR templates, dependabot, `.gitattributes` and eval cases.
+- Adds a release workflow, CONTRIBUTING, a code of conduct, issue templates and eval cases.
 
 ## 0.2.0
 

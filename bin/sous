@@ -52,15 +52,16 @@ import sys
 import tempfile
 import time
 
-SOUS_VERSION = "0.3.0"
 SOUS_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+with open(os.path.join(SOUS_ROOT, ".claude-plugin", "plugin.json")) as _f:
+    SOUS_VERSION = json.load(_f)["version"]  # the one place the version is written
 HOOK_SRC = os.path.join(SOUS_ROOT, "hooks", "sous-guard.sh")
 # Budgets: a memory file past this is loaded every turn and mostly skimmed; a
 # guard slower than this taxes every Bash call. Override per project via env.
 MEMORY_LINE_BUDGET = int(os.environ.get("SOUS_MEMORY_LINES", "400"))
 GUARD_MS_BUDGET = int(os.environ.get("SOUS_GUARD_MS", "500"))
 BLOCK_LOG = os.environ.get("SOUS_LOG") or os.path.expanduser("~/.claude/sous/blocks.tsv")
-HOOK_TESTS =[os.path.join(SOUS_ROOT, "tests", n) for n in ("sous-guard.test.sh", "adversarial.test.sh")]
+HOOK_TESTS = [os.path.join(SOUS_ROOT, "tests", n) for n in ("sous-guard.test.sh", "adversarial.test.sh")]
 SKILLS_SRC = os.path.join(SOUS_ROOT, "skills")
 USER_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 INSTALLED_PLUGINS = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
@@ -154,6 +155,44 @@ def _dict(x):
 def _rules(x):
     """A permission list, keeping only its string entries."""
     return [i for i in x if isinstance(i, str)] if isinstance(x, list) else []
+
+
+def missing(required, rules):
+    """The required rules a permission list lacks."""
+    have = _rules(rules)
+    return [r for r in required if r not in have]
+
+
+def allow_overlap(settings):
+    """Allow rules that also sit in ask or deny. Ask and deny still win at
+    runtime, but the allow reads like permission: a silent hole in intent."""
+    perm = _dict(_dict(settings).get("permissions"))
+    held = _rules(perm.get("ask")) + _rules(perm.get("deny"))
+    return [a for a in _rules(perm.get("allow")) if a in held]
+
+
+def bypass_disabled(user_settings):
+    return _dict(_dict(user_settings).get("permissions")).get("disableBypassPermissionsMode") == "disable"
+
+
+def in_ci():
+    """CI runners have a throwaway HOME, so user scope and plugins aren't the user's."""
+    return bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"))
+
+
+def refuse_jsonc_rewrite(path):
+    print(f"sous: {path} has comments or trailing commas; rewriting it would drop them.\n"
+          "      Make it strict JSON (or apply the lines above by hand), then rerun.", file=sys.stderr)
+    return 1
+
+
+def version_label(v):
+    """How a guard's SOUS_GUARD_VERSION stamp reads in a message."""
+    return f"v{v}" if v else "unstamped (before 0.3.0)"
+
+
+def table_name(test):
+    return os.path.basename(test).replace(".test.sh", "")
 
 
 def write_json_atomic(path, data):
@@ -309,11 +348,6 @@ def guards_in(settings, root, plugin_root=None):
     return out
 
 
-def guard_in(settings, root):
-    g = guards_in(settings, root)
-    return g[0] if g else None
-
-
 def guard_version(path):
     """The SOUS_GUARD_VERSION stamp in a guard file; None before 0.3.0."""
     try:
@@ -458,7 +492,7 @@ def install(root, ios, strict, dry_run, verb="install"):
 
     user = read_json_quiet(USER_SETTINGS)
     # Project scope only: a guard in ~/.claude protects this host, not teammates.
-    existing_guard = guard_in(settings, root)
+    existing_guard = next(iter(guards_in(settings, root)), None)
 
     template = load(os.path.join(SOUS_ROOT, "templates", "settings.base.json"))
     hook_dst = os.path.join(claude_dir, "hooks", "sous-guard.sh")
@@ -477,13 +511,10 @@ def install(root, ios, strict, dry_run, verb="install"):
         merge(settings, load(os.path.join(SOUS_ROOT, "templates", "settings.strict.json")), notes,
               force=True, ops=ops)
 
-    # An allow entry that also sits in ask/deny is a silent hole in intent: ask/deny
-    # still win at runtime, but the allow reads like permission. Report, don't edit.
-    perm = _dict(settings.get("permissions"))
-    for rule in _rules(perm.get("allow")):
-        if rule in _rules(perm.get("ask")) or rule in _rules(perm.get("deny")):
-            notes.append(f"warn permissions.allow also holds {rule}; remove it from allow")
-    if not (os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI")):
+    # Report, don't edit: removing someone's allow rule is not additive.
+    for rule in allow_overlap(settings):
+        notes.append(f"warn permissions.allow also holds {rule}; remove it from allow")
+    if not in_ci():
         local = read_json_quiet(os.path.join(claude_dir, "settings.local.json"))
         for name, ip in sous_plugins(root, [user, settings, local]):
             if guards_in(read_json_quiet(os.path.join(ip, "hooks", "hooks.json")), root, ip):
@@ -506,9 +537,7 @@ def install(root, ios, strict, dry_run, verb="install"):
     if dry_run:
         return 0
     if lenient and settings != before:
-        print(f"sous: {settings_path} has comments or trailing commas; rewriting it would drop them.\n"
-              "      Make it strict JSON (or apply the lines above by hand), then rerun.", file=sys.stderr)
-        return 1
+        return refuse_jsonc_rewrite(settings_path)
 
     # Everything sous adds is written to the manifest, so uninstall removes
     # exactly that and nothing a person added before or after.
@@ -542,7 +571,7 @@ def install(root, ios, strict, dry_run, verb="install"):
             for n in names:
                 files[_rel(root, os.path.join(d, n))] = _sha(os.path.join(d, n))
     update_manifest(claude_dir, ops, files, dirs, settings_created and settings != before)
-    if _dict(user.get("permissions")).get("disableBypassPermissionsMode") != "disable":
+    if not bypass_disabled(user):
         print('  next: add "disableBypassPermissionsMode": "disable" under permissions in ~/.claude/settings.json')
         print("        (sous never edits user scope; bypass mode skips every ask gate above)")
     print("  next: restart Claude Code (or /hooks) so the new settings load, then run: sous doctor")
@@ -657,9 +686,7 @@ def uninstall(root, dry_run):
     if dry_run:
         return 0
     if lenient and settings != before:
-        print(f"sous: {settings_path} has comments or trailing commas; rewriting it would drop them.\n"
-              "      Make it strict JSON (or apply the lines above by hand), then rerun.", file=sys.stderr)
-        return 1
+        return refuse_jsonc_rewrite(settings_path)
     if drop_settings:
         os.unlink(settings_path)
     elif settings != before:
@@ -829,7 +856,7 @@ def doctor(root, ios, strict, mode):
             local, local_lenient = read_json(local_path)
         except SettingsError as e:
             r.bad(f"{e} (Claude Code layers this file over settings.json)")
-    ci = bool(os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"))
+    ci = in_ci()
     user, user_err = None, None
     if not ci and os.path.isfile(USER_SETTINGS):
         try:
@@ -860,8 +887,8 @@ def doctor(root, ios, strict, mode):
     r.info(".mcp.json present" if os.path.isfile(os.path.join(root, ".mcp.json")) else "no project .mcp.json")
 
     print("Layer 3 permissions + sandbox")
-    missing = [d for d in REQUIRED_DENY if d not in _rules(perm.get("deny"))]
-    r.bad("deny lacks " + ", ".join(missing)) if missing else r.ok("deny rules")
+    lacks = missing(REQUIRED_DENY, perm.get("deny"))
+    r.bad("deny lacks " + ", ".join(lacks)) if lacks else r.ok("deny rules")
     if sb.get("enabled") is True:
         r.ok("sandbox enabled")
     else:
@@ -877,7 +904,7 @@ def doctor(root, ios, strict, mode):
     else:
         r.info(f"sandbox host: {host} (the sandbox can't start here)")
     if ios:
-        miss = [c for c in REQUIRED_IOS_EXCLUDED if c not in _rules(sb.get("excludedCommands"))]
+        miss = missing(REQUIRED_IOS_EXCLUDED, sb.get("excludedCommands"))
         r.bad("sandbox.excludedCommands lacks " + ", ".join(miss) + " (xcodebuild can't nest sandboxes)") if miss \
             else r.ok("Xcode toolchain excluded from sandbox")
     if strict:
@@ -898,8 +925,8 @@ def doctor(root, ios, strict, mode):
                    else "sandbox never probed live")
             msg = f"{why}: run the `sous probe` prompts in a fresh session, then `sous probe --record {root}`"
             r.bad("strict: " + msg) if strict else r.info(msg)
-    allow, ask, deny = (_rules(perm.get(k)) for k in ("allow", "ask", "deny"))
-    overlap = [a for a in allow if a in ask or a in deny]
+    allow, ask = _rules(perm.get("allow")), _rules(perm.get("ask"))
+    overlap = allow_overlap(eff)
     r.bad("allow also holds " + ", ".join(overlap)) if overlap else r.ok("no allow/ask/deny overlap")
     dups = sorted({f"{label}{k}:{x}" for label, data in (("", s), ("local ", local)) for k in ("allow", "ask", "deny")
                    for x, c in collections.Counter(_rules(_dict(data.get("permissions")).get(k))).items() if c > 1})
@@ -943,7 +970,7 @@ def doctor(root, ios, strict, mode):
                 r.bad(f"{p} has CRLF line endings, which break bash; check out *.sh with eol=lf")
         v = guard_version(p)
         if v != SOUS_VERSION and not os.path.realpath(p).startswith(os.path.join(root, ".claude") + os.sep):
-            r.info(f"{where} guard is {('v' + v) if v else 'unstamped (before 0.3.0)'}, this sous is {SOUS_VERSION}")
+            r.info(f"{where} guard is {version_label(v)}, this sous is {SOUS_VERSION}")
     guard = guards[0][0] if guards else None
     bash = shutil.which("bash")
     if not guard:
@@ -953,8 +980,8 @@ def doctor(root, ios, strict, mode):
     else:
         # Run the tables against the hook Claude Code will actually call, not sous's copy.
         # A pass is cached by content hash of the guard, its sourced sibling, the
-        # tables and the bash/jq that run them, so doctor only pays for the 200+
-        # cases when one of them changed. CI runs them every time, since a
+        # tables and the bash/jq that run them, so doctor only pays for the
+        # tables when one of them changed. CI runs them every time, since a
         # restored CI cache is input an outsider may have shaped; the
         # SOUS_TABLE_CACHE=on|off env overrides either default.
         sibling = os.path.join(os.path.dirname(guard), "sous-guard.sh")
@@ -976,7 +1003,7 @@ def doctor(root, ios, strict, mode):
             for test in HOOK_TESTS:
                 res = subprocess.run([bash, test], env=env, capture_output=True, text=True)
                 tail = (res.stdout.strip().splitlines() or ["no output"])[-1]
-                name = os.path.basename(test).replace(".test.sh", "")
+                name = table_name(test)
                 if res.returncode == 0:
                     r.ok(f"{name}: {tail}")
                     passed.append(f"{name}: {tail}")
@@ -998,11 +1025,11 @@ def doctor(root, ios, strict, mode):
         if v == SOUS_VERSION:
             r.bad("project .claude/hooks/sous-guard.sh is stale vs sous (same version, edited); rerun sous install")
         else:
-            r.bad(f"project .claude/hooks/sous-guard.sh is {('v' + v) if v else 'unstamped (before 0.3.0)'}, "
+            r.bad(f"project .claude/hooks/sous-guard.sh is {version_label(v)}, "
                   f"sous is {SOUS_VERSION}; run `sous upgrade`")
 
     print("Layer 5 gates")
-    miss = [a for a in REQUIRED_ASK if a not in ask]
+    miss = missing(REQUIRED_ASK, ask)
     r.bad("ask lacks " + ", ".join(miss)) if miss else r.ok("push / commit / unsandboxed retry ask first")
     if ci:
         r.skip("user scope (a CI runner's $HOME is not yours)")
@@ -1010,7 +1037,7 @@ def doctor(root, ios, strict, mode):
         r.bad(f"user settings unreadable: {user_err}")
     elif user is None:
         r.skip(f"no {USER_SETTINGS}")
-    elif _dict(user.get("permissions")).get("disableBypassPermissionsMode") == "disable":
+    elif bypass_disabled(user):
         r.ok("bypass mode disabled in user settings")
     else:
         r.bad('~/.claude/settings.json lacks permissions.disableBypassPermissionsMode: "disable"')
@@ -1052,14 +1079,13 @@ def check(root):
         return 0
     perm, sb = _dict(s.get("permissions")), _dict(s.get("sandbox"))
     gaps = []
-    if [d for d in REQUIRED_DENY if d not in _rules(perm.get("deny"))]:
+    if missing(REQUIRED_DENY, perm.get("deny")):
         gaps.append("deny rules")
     if sb.get("enabled") is not True:
         gaps.append("sandbox")
-    if [a for a in REQUIRED_ASK if a not in _rules(perm.get("ask"))]:
+    if missing(REQUIRED_ASK, perm.get("ask")):
         gaps.append("ask gates")
-    user = read_json_quiet(USER_SETTINGS)
-    if _dict(user.get("permissions")).get("disableBypassPermissionsMode") != "disable":
+    if not bypass_disabled(read_json_quiet(USER_SETTINGS)):
         gaps.append("bypass mode still allowed in ~/.claude/settings.json")
     if gaps:
         print("sous: missing " + ", ".join(gaps) + ". Run `sous doctor` for detail, `sous install` to fix.")
@@ -1112,7 +1138,7 @@ def read_table_cache(path):
     except (OSError, UnicodeDecodeError):
         return None
     names = sorted(ln.split(":", 1)[0] for ln in lines)
-    want = sorted(os.path.basename(t).replace(".test.sh", "") for t in HOOK_TESTS)
+    want = sorted(table_name(t) for t in HOOK_TESTS)
     if names != want or not all(TABLE_LINE.match(ln) for ln in lines):
         return None
     return lines

@@ -354,6 +354,12 @@ expect "version matches the guard stamp" 0 sh -c '[ "$(python3 "$1" --version)" 
 
 # Repo facts that live in one place and are quoted elsewhere.
 REPO="$(cd "$HERE/.." && pwd)"
+expect "CHANGELOG top entry and marketplace sous version are plugin.json's" 0 python3 -c '
+import json, re, sys; r = sys.argv[1]
+v = json.load(open(r + "/.claude-plugin/plugin.json"))["version"]
+top = re.search(r"^## (\S+)", open(r + "/CHANGELOG.md").read(), re.M).group(1)
+mkt = [p.get("version") for p in json.load(open(r + "/.claude-plugin/marketplace.json"))["plugins"] if p["name"] == "sous"]
+assert top == v and mkt == [v], (v, top, mkt)' "$REPO"
 expect "docs/demo.txt is what docs/demo.sh prints" 0 sh -c 'bash "$1/docs/demo.sh" | cmp -s - "$1/docs/demo.txt"' _ "$REPO"
 expect "README quotes docs/demo.txt verbatim" 0 python3 -c '
 import sys; r = sys.argv[1]

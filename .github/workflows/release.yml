@@ -11,10 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: tag matches sous --version and plugin.json
+      - name: tag matches plugin.json
         run: |
           v="${GITHUB_REF_NAME#v}"
-          [ "$(python3 bin/sous --version)" = "sous $v" ] || { echo "::error::bin/sous is not $v"; exit 1; }
           [ "$(python3 -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')" = "$v" ] \
             || { echo "::error::plugin.json is not $v"; exit 1; }
       - name: notes from CHANGELOG.md
