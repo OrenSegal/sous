@@ -509,6 +509,11 @@ expect "each shape problem named" 0 sh -c 'out=$(python3 "$1" marketplace-check 
 mkdir -p "$WORK/m-ver/p/.claude-plugin"; printf '{"name": "p", "version": "1.0.0"}\n' > "$WORK/m-ver/p/.claude-plugin/plugin.json"
 mkt "$WORK/m-ver" '[{"name": "p", "source": "./p", "version": "0.9.0"}]'
 expect "relative plugin version drift fails" 1 python3 "$SOUS" marketplace-check "$WORK/m-ver" --offline
+mkt "$WORK/m-tagver" "[$(src a v1.2.0 "$c1" | sed 's/}}$/}, "version": "1.1.0"}/')]"
+expect "a version that disagrees with the pinned tag fails" 1 python3 "$SOUS" marketplace-check "$WORK/m-tagver" --offline
+expect "...and says which" 0 sh -c 'python3 "$1" marketplace-check "$2" --offline | grep -q "pinned to v1.2.0"' _ "$SOUS" "$WORK/m-tagver"
+mkt "$WORK/m-tagok" "[$(src a v1.2.0 "$c1" | sed 's/}}$/}, "version": "1.2.0"}/'), $(src b rel "$c2" | sed 's/}}$/}, "version": "9.9.9"}/')]"
+expect "a matching version, or a branch ref, passes" 0 python3 "$SOUS" marketplace-check "$WORK/m-tagok" --offline
 printf '{"name": "m", "plugins": []}\n' > "$WORK/m-ver/.claude-plugin/marketplace.json"
 expect "no owner, no plugins fails" 1 python3 "$SOUS" marketplace-check "$WORK/m-ver" --offline
 expect "bad --timeout" 64 python3 "$SOUS" marketplace-check --timeout=0
