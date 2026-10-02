@@ -311,6 +311,14 @@ _sous_match() {
     return 1
   fi
 
+  # 6c. `sous accept` records the current plugin surface as the reviewed one, so
+  #     a session that can run it can clear its own drift report. The user runs it.
+  local re_accept='(^|[;&|(])[[:space:]]*([^[:space:]]*/)?sous[[:space:]]+accept([[:space:]]|$)'
+  if [[ $norm =~ $re_accept ]]; then
+    echo "BLOCKED (sous): sous accept marks plugin changes as reviewed. Show the user the drift; they run it."
+    return 1
+  fi
+
   # 7. Building a command out of sight: decode or fetch, then run it.
   #    A pipe (not ||) into a shell, through sudo/env/VAR=, or a fetch piped into
   #    an interpreter reading stdin; a shell fed $(fetch), <(fetch) or <<<.

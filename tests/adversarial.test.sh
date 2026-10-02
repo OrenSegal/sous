@@ -339,6 +339,15 @@ check 0 $'cat > notes.md <<\'END-OF-NOTES\'\nnever cat .env\nEND-OF-NOTES'
 check 0 $'cat > a.md <<\'A\' && cat > b.md <<\'B\'\nrm -rf one\nA\ngit push -f two\nB'
 check 0 $'git commit -F - <<\'EOF\'\nuse `rm -rf` never, see $(docs)\nEOF'
 
+# --- sous accept is the user's word: an agent may not clear its own drift report.
+check 2 'sous accept'
+check 2 'cd app && sous accept .'
+check 2 'bin/sous accept'
+check 2 'true; ./bin/sous accept /tmp/x'
+check 0 'sous doctor'
+check 0 'git log --grep="sous accept"'
+check 0 $'git commit -m "$(cat <<\'EOF\'\nrun sous accept after review\nEOF\n)"'
+
 # --- input robustness: the hook must fail closed on garbage
 check_raw 2 'malformed json' '{"tool_input": {"command": "rm -rf build"'
 check_raw 2 'not json at all' 'rm -rf build'
