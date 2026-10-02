@@ -25,7 +25,7 @@ already reads:
 | Layer | What holds it | sous adds |
 |---|---|---|
 | 1 Memory | `CLAUDE.md` / `AGENTS.md` | presence and size check |
-| 2 Tools | `.mcp.json`, plugins | servers listed, unpinned ones named, the set fingerprinted so a change shows |
+| 2 Tools | `.mcp.json`, plugins | servers listed, unpinned ones named; each plugin's hooks, `bin/`, MCP servers and tool requests recorded by `sous accept`, so a change is named |
 | 3 Permissions + sandbox | `.claude/settings.json` `permissions` + `sandbox` | deny `.env` read/edit, recursive force delete, force push; OS sandbox on with a network allowlist |
 | 4 Hooks | `PreToolUse` | `sous-guard.sh`: hard stops for the spellings deny rules miss (`/bin/rm -rf`, `sh -c`, `git -C . push -f`, `cat .env`) |
 | 5 Human gates | `permissions.ask`, user settings | push / commit / PR / unsandboxed retry ask first; bypass mode disabled |
@@ -90,10 +90,16 @@ Three claims, each one checked by something you can run:
    or reached after `cd` is a known gap ([SECURITY.md](SECURITY.md)); the OS
    sandbox's write scope is the boundary there.
 
-A change to the tool set shows too: `sous probe --record` fingerprints the
-`.mcp.json` servers (names and shape, never env or header values) and the
-enabled plugins with their versions. `sous doctor` notes drift, and `--strict`
-fails on it until you review the change and record again.
+A change to the tool set shows too. `sous accept DIR` records the `.mcp.json`
+servers (names and shape, never env or header values) and, for each enabled
+plugin, its version, every hook command, a hash of each file under `hooks/`
+and `bin/` or named by a hook, its MCP servers, and the `allowed-tools` its
+commands, agents and skills ask for. `sous doctor` then names each item added,
+removed or changed (`changed acme@mkt file hooks/start.sh`), `--strict` fails
+on it, and `sous gate` warns. A plugin can change a hook script without
+bumping its version; this is what catches that. Nothing accepts a change for
+you: the record moves only when you run `sous accept` again. User-scope MCP
+servers in `~/.claude.json` are not covered.
 
 ## Install
 
@@ -180,7 +186,11 @@ reviewed stay acknowledged after `sous gate --ack-blocks`. A linked worktree
 whose `.claude` settings or `.mcp.json` differ from the main checkout's gets a
 warning: a gitignored `settings.local.json` is not checked out into a new
 worktree. With [scoped](https://github.com/OrenSegal/scoped) on `PATH`, a
-changed file another session claims fails the gate. `--json` prints the same
+changed file another session claims fails the gate. A plugin surface that
+changed since `sous accept` warns (outside CI). With a `CHANGELOG.md`, a
+version bumped in `.claude-plugin/plugin.json` or `package.json` with no
+`## <version>` heading fails, and a change under `bin/`, `commands/`, `hooks/`
+or `skills/` with no new CHANGELOG line warns. `--json` prints the same
 checks.
 
 `--transcript=FILE.jsonl` also compares the session's final message with its
@@ -206,6 +216,26 @@ message that mentions `rm -rf`) unless the heredoc feeds an interpreter
 (`bash <<EOF`). It is a text matcher: what it can't
 see is listed under known gaps in [SECURITY.md](SECURITY.md), each asserted by
 a test.
+
+## Works with
+
+sous checks the harness and the branch; it is not a workflow. Use these
+alongside it:
+
+- [spec-kit](https://github.com/github/spec-kit) for spec-driven planning.
+  sous checks the result: the tests ran and weren't weakened.
+- [superpowers](https://github.com/obra/superpowers) for workflow skills. sous
+  adds hard stops and a merge gate that hold whether or not a skill loads.
+- AgentShield or agent-scan for one-off config and MCP scans. sous keeps what
+  you accepted and names what changed since, on every doctor and gate run.
+- [ccusage](https://github.com/ryoppippi/ccusage) for cost tracking. sous
+  tracks no tokens or cost.
+- hookify for authoring hooks. sous ships one tested guard and checks hooks
+  are wired; it doesn't write rules for you.
+
+Where sous stops: it reads command text and files. It doesn't see a path built
+at runtime, doesn't watch a live session, and doesn't replace the OS sandbox,
+which is the boundary.
 
 ## iOS / Xcode
 

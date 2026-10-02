@@ -4,7 +4,7 @@
 Agent = model + harness. sous covers the harness in five layers:
 
   1 memory       CLAUDE.md / AGENTS.md
-  2 tools        .mcp.json, plugins (fingerprinted, so drift shows)
+  2 tools        .mcp.json, plugins (recorded by `sous accept`, so drift shows)
   3 permissions  settings.json deny/ask + the OS sandbox (Seatbelt / bubblewrap)
   4 hooks        sous-guard.sh PreToolUse hard stops
   5 gates        ask rules on push/commit/PR, bypass mode disabled
@@ -19,13 +19,17 @@ Usage:
   sous check     [DIR]                                 one-line gap summary, silent when layers 3 and 5 are present
   sous probe     [--record DIR]                        live red-team prompts for a fresh session;
                                                        --record notes that you ran them and they held
+  sous accept    [DIR]                                 record the MCP servers and each enabled plugin's
+                                                       hooks, bin/, MCP servers and tool requests as
+                                                       reviewed; doctor and gate name what changes next
   sous report    [--days=N]                            what the guard blocked, and how to tune it
   sous lint      [DIR] [--fix] [--dry-run]             "never X" lines in CLAUDE.md / AGENTS.md that no deny rule
                                                        or guard rule enforces; --fix adds them as deny rules
   sous gate      [DIR] [--base REF] [--json] [--test-log=FILE] [--transcript=FILE.jsonl]
                                                        exit 0 only when the branch is safe to merge:
                                                        clean, pushed, tests ran and not weakened, no
-                                                       unreviewed guard blocks, doctor passes;
+                                                       unreviewed guard blocks, doctor passes, a
+                                                       bumped version has a CHANGELOG heading;
                                                        --ack-blocks marks this worktree's blocks reviewed
   sous fleet     [DIR] [--base REF] [--json]           every worktree of the repo: branch, dirty,
                                                        ahead/behind, tests ran, blocks, scoped claims
@@ -390,18 +394,12 @@ def overlay(base, local):
     return out
 
 
-def sous_plugins(root, layers):
-    """(name, installPath) for each enabled sous plugin install that applies
-    to root. layers: user, project, local settings, lowest precedence first."""
-    enabled = {}
-    for data in layers:
-        ep = _dict(data).get("enabledPlugins")
-        if isinstance(ep, dict):
-            enabled.update(ep)
-    names = [k for k, v in enabled.items() if v is True and isinstance(k, str) and k.split("@", 1)[0] == "sous"]
+def plugin_installs(root, layers):
+    """(name, install entry) for each enabled plugin install that applies to
+    root. layers: user, project, local settings, lowest precedence first."""
     installed = _dict(read_json_quiet(INSTALLED_PLUGINS).get("plugins"))
     out = []
-    for name in names:
+    for name in enabled_plugins(layers):
         entries = installed.get(name)
         for e in entries if isinstance(entries, list) else []:
             ip, pp = _dict(e).get("installPath"), _dict(e).get("projectPath")
@@ -409,8 +407,13 @@ def sous_plugins(root, layers):
                 continue
             if e.get("scope") in ("project", "local") and isinstance(pp, str) and os.path.realpath(pp) != root:
                 continue
-            out.append((name, ip))
+            out.append((name, e))
     return out
+
+
+def sous_plugins(root, layers):
+    """(name, installPath) for each enabled sous plugin install that applies to root."""
+    return [(n, e["installPath"]) for n, e in plugin_installs(root, layers) if n.split("@", 1)[0] == "sous"]
 
 
 def plugin_hook_problems(plugin_root, root):
@@ -465,17 +468,19 @@ def settings_fingerprint(effective):
     return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def mcp_shape(spec):
+    """An MCP server without env or header values (they hold secrets, and a
+    fingerprint of them would change on rotation)."""
+    spec = _dict(spec)
+    return {"command": spec.get("command"), "args": spec.get("args"), "url": spec.get("url"),
+            "type": spec.get("type"), "env": sorted(_dict(spec.get("env"))),
+            "headers": sorted(_dict(spec.get("headers")))}
+
+
 def mcp_servers(root):
-    """{name: shape} for the project's .mcp.json, without env or header values
-    (they hold secrets, and a fingerprint of them would change on rotation)."""
+    """{name: shape} for the project's .mcp.json."""
     servers = _dict(read_json_quiet(os.path.join(root, ".mcp.json")).get("mcpServers"))
-    out = {}
-    for name, spec in servers.items():
-        spec = _dict(spec)
-        out[name] = {"command": spec.get("command"), "args": spec.get("args"), "url": spec.get("url"),
-                     "type": spec.get("type"), "env": sorted(_dict(spec.get("env"))),
-                     "headers": sorted(_dict(spec.get("headers")))}
-    return out
+    return {name: mcp_shape(spec) for name, spec in servers.items()}
 
 
 def enabled_plugins(layers):
@@ -500,6 +505,209 @@ def tools_fingerprint(root, layers):
                                 for e in (entries if isinstance(entries, list) else [])})
     core = {"mcp": mcp_servers(root), "plugins": plugins}
     return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()[:16]
+
+
+# Plugin surface: what an enabled plugin can run or ask for, item by item, so a
+# change after `sous accept` is named, not just noticed. A version or sha bump
+# moved the hash above; a same-version edit to a hook script did not.
+SURFACE_DIRS = ("hooks", "bin")       # everything in these can run
+SURFACE_SKIP = ("__pycache__", ".git", ".DS_Store")
+SURFACE_MAX_FILES = 2000
+
+
+def _digest(data):
+    raw = data if isinstance(data, bytes) else json.dumps(data, sort_keys=True).encode()
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _file_sha(path):
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 16), b""):
+                h.update(chunk)
+    except OSError:
+        return "unreadable"
+    return h.hexdigest()[:16]
+
+
+def _servers(data):
+    """MCP servers from a .mcp.json-shaped dict: wrapped in mcpServers, or flat."""
+    data = _dict(data)
+    return _dict(data["mcpServers"]) if "mcpServers" in data else data
+
+
+def _plugin_hook_maps(ip, manifest):
+    """{event: groups} maps a plugin declares: hooks/hooks.json and plugin.json
+    hooks (a path, a list of paths, or inline)."""
+    paths, maps = [os.path.join(ip, "hooks", "hooks.json")], []
+    decl = manifest.get("hooks")
+    for d in decl if isinstance(decl, list) else [decl]:
+        if isinstance(d, str):
+            paths.append(os.path.normpath(os.path.join(ip, d)))
+        elif isinstance(d, dict):
+            maps.append(d)
+    maps += [read_json_quiet(p) for p in dict.fromkeys(paths) if os.path.isfile(p)]
+    return [_dict(m["hooks"]) if isinstance(m.get("hooks"), dict) else m for m in maps]
+
+
+def _frontmatter_tools(path):
+    """The allowed-tools / tools lines of a command, agent or skill, or None."""
+    try:
+        with open(path, errors="replace") as f:
+            lines = f.read(65536).splitlines()
+    except OSError:
+        return None
+    if not lines or lines[0].strip() != "---":
+        return None
+    out, grab = [], False
+    for ln in lines[1:]:
+        if ln.strip() == "---":
+            break
+        if re.match(r"(allowed-tools|tools)\s*:", ln):
+            out.append(ln.strip())
+            grab = True
+        elif grab and re.match(r"\s+\S|-", ln):
+            out.append(ln.strip())
+        else:
+            grab = False
+    return "\n".join(out) if out else None
+
+
+def plugin_surface(label, ip):
+    """{key: hash} for one plugin install: each hook (keyed by event, matcher and
+    command), each file under hooks/ and bin/ or named by a hook command, each
+    MCP server (shape only), each command/agent/skill tool request, settings.json."""
+    out, named = {}, set()
+    manifest = read_json_quiet(os.path.join(ip, ".claude-plugin", "plugin.json"))
+    for hooks in _plugin_hook_maps(ip, manifest):
+        for event, groups in hooks.items():
+            for group in groups if isinstance(groups, list) else []:
+                m = _dict(group).get("matcher")
+                where = f"{event}[{m}]" if isinstance(m, str) and m else str(event)
+                hs = _dict(group).get("hooks")
+                for i, h in enumerate(hs if isinstance(hs, list) else []):
+                    h, cmd = _dict(h), _dict(h).get("command")
+                    if isinstance(cmd, str):
+                        shown = cmd if len(cmd) <= 160 else f"{cmd[:140]}... #{_digest(cmd)[:6]}"
+                        out[f"{label} hook {where}: {shown}"] = _digest(h)
+                        named.update(re.findall(r"\$\{?CLAUDE_PLUGIN_ROOT\}?/([^\s\"';&|<>()]+)", cmd))
+                    else:
+                        out[f"{label} hook {where}: {h.get('type', '?')} #{i + 1}"] = _digest(h)
+    files = set()
+    for d in SURFACE_DIRS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(ip, d)):
+            dirnames[:] = [x for x in dirnames if x not in SURFACE_SKIP]
+            files.update(os.path.relpath(os.path.join(dirpath, f), ip) for f in filenames
+                         if f not in SURFACE_SKIP and not f.endswith(".pyc"))
+    for rel in map(os.path.normpath, named):
+        if not rel.startswith("..") and os.path.isfile(os.path.join(ip, rel)):
+            files.add(rel)
+    files = sorted(files)
+    for rel in files[:SURFACE_MAX_FILES]:
+        out[f"{label} file {rel}"] = _file_sha(os.path.join(ip, rel))
+    if len(files) > SURFACE_MAX_FILES:
+        out[f"{label} file count"] = str(len(files))  # past the cap only the count is watched
+    servers = dict(_servers(read_json_quiet(os.path.join(ip, ".mcp.json"))))
+    decl = manifest.get("mcpServers")
+    if isinstance(decl, str):
+        decl = read_json_quiet(os.path.normpath(os.path.join(ip, decl)))
+    servers.update(_servers(decl))
+    for name, spec in servers.items():
+        if isinstance(spec, dict):
+            out[f"{label} mcp {name}"] = _digest(mcp_shape(spec))
+    docs = glob.glob(os.path.join(glob.escape(ip), "commands", "**", "*.md"), recursive=True) \
+        + glob.glob(os.path.join(glob.escape(ip), "agents", "*.md")) \
+        + glob.glob(os.path.join(glob.escape(ip), "skills", "*", "SKILL.md"))
+    for p in sorted(docs):
+        tools = _frontmatter_tools(p)
+        if tools is not None:
+            out[f"{label} tools {os.path.relpath(p, ip)}"] = _digest(tools)
+    if os.path.isfile(os.path.join(ip, "settings.json")):
+        out[f"{label} settings"] = _file_sha(os.path.join(ip, "settings.json"))
+    return out
+
+
+def tool_surface(root, layers):
+    """Layer 2 item by item: project MCP servers and every enabled plugin's surface."""
+    out = {f"mcp {n}": _digest(s) for n, s in mcp_servers(root).items()}
+    installs = plugin_installs(root, layers)
+    count = collections.Counter(n for n, _ in installs)
+    for name in enabled_plugins(layers):
+        if not count[name]:
+            out[f"{name} version"] = "not installed"
+    for name, e in installs:
+        label = name if count[name] == 1 else f"{name} ({e.get('scope', '?')})"
+        out[f"{label} version"] = f"{e.get('version')}@{e.get('gitCommitSha')}"
+        out.update(plugin_surface(label, e["installPath"]))
+    return out
+
+
+def surface_diff(old, new):
+    """added / removed / changed lines, by key; values (hashes) are never shown."""
+    keys = sorted(set(old) | set(new))
+    return [("added " if k not in old else "removed " if k not in new else "changed ") + k
+            for k in keys if old.get(k) != new.get(k)]
+
+
+def tool_layers(root):
+    """Settings layers that enable plugins: none in CI (the runner's HOME isn't yours)."""
+    if in_ci():
+        return []
+    claude = os.path.join(root, ".claude")
+    return [read_json_quiet(USER_SETTINGS), read_json_quiet(os.path.join(claude, "settings.json")),
+            read_json_quiet(os.path.join(claude, "settings.local.json"))]
+
+
+def tools_drift(root, layers, rec):
+    """(state, lines) for a probes.json record: none (no record), same, changed
+    (lines name each change), or legacy-same / legacy-changed for a hash-only
+    record written before `sous accept`, which can't say what changed."""
+    if isinstance(rec.get("surface"), dict):
+        lines = surface_diff(rec["surface"], tool_surface(root, layers))
+        return ("changed" if lines else "same"), lines
+    if rec.get("tools"):
+        return ("legacy-same" if rec["tools"] == tools_fingerprint(root, layers) else "legacy-changed"), []
+    return "none", []
+
+
+def probe_records():
+    try:
+        return _dict((read_json(PROBES_FILE)[0] if os.path.isfile(PROBES_FILE) else {}).get("projects"))
+    except SettingsError:
+        return {}
+
+
+def write_probe_records(projects):
+    os.makedirs(os.path.dirname(PROBES_FILE), exist_ok=True)
+    write_json_atomic(PROBES_FILE, {"sous_probes": 1, "projects": projects})
+
+
+def record_tools(entry, root, layers):
+    """Store the tool set as is: the hash older sous reads, and the item list."""
+    entry["tools"] = tools_fingerprint(root, layers)
+    entry["surface"] = tool_surface(root, layers)
+    entry["tools_recorded"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return entry
+
+
+def accept(root):
+    """Record the current tool surface as reviewed. Only ever run by the user:
+    nothing in sous calls it, so drift stays reported until someone looks."""
+    projects = probe_records()
+    entry = _dict(projects.get(root))
+    before = entry.get("surface")
+    projects[root] = record_tools(entry, root, tool_layers(root))
+    write_probe_records(projects)
+    lines = surface_diff(before, entry["surface"]) if isinstance(before, dict) else []
+    print(f"sous: accepted the tool surface for {root}: {len(entry['surface'])} item(s) "
+          "(MCP servers; plugin hooks, hooks/ and bin/ files, MCP servers, tool requests).")
+    for ln in lines[:20]:
+        print(f"      {ln}")
+    if len(lines) > 20:
+        print(f"      ... and {len(lines) - 20} more")
+    print("      This is your word that you reviewed it; doctor and gate name what changes from here.")
+    return 0
 
 
 def unpinned_mcp(servers):
@@ -537,17 +745,21 @@ def probe_record(root):
     except SettingsError as e:
         print(f"sous: {e}", file=sys.stderr)
         return 1
-    try:
-        data = read_json(PROBES_FILE)[0] if os.path.isfile(PROBES_FILE) else {}
-    except SettingsError:
-        data = {}
-    projects = _dict(data.get("projects"))
+    projects = probe_records()
     layers = [] if in_ci() else [read_json_quiet(USER_SETTINGS)]
-    projects[root] = {"fingerprint": settings_fingerprint(effective),
-                      "tools": tools_fingerprint(root, layers + [base, local]),
-                      "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "sous": SOUS_VERSION}
-    os.makedirs(os.path.dirname(PROBES_FILE), exist_ok=True)
-    write_json_atomic(PROBES_FILE, {"sous_probes": 1, "projects": projects})
+    old = _dict(projects.get(root))
+    entry = {"fingerprint": settings_fingerprint(effective),
+             "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "sous": SOUS_VERSION}
+    # The tool set is `sous accept`'s to move: a probe keeps the accepted record
+    # and only seeds a first one, so it never accepts tool drift on the side.
+    tool_keys = ("tools", "surface", "tools_recorded")
+    if old.get("tools"):
+        entry.update({k: old[k] for k in tool_keys if k in old})
+        entry["tools_recorded"] = old.get("tools_recorded") or old.get("recorded", "?")
+    else:
+        record_tools(entry, root, layers + [base, local])
+    projects[root] = entry
+    write_probe_records(projects)
     print(f"sous: recorded that the live probes held for {root} ({projects[root]['fingerprint']}).\n"
           "      This is your word, not a test sous ran; doctor --strict asks again when the settings change.")
     return 0
@@ -1139,18 +1351,28 @@ def doctor(root, ios, strict, mode):
            else "no project .mcp.json servers")
     for line in unpinned_mcp(servers):
         r.info(f"unpinned MCP server: {line}")
-    tools_now = tools_fingerprint(root, [] if ci else [user or {}, s, local])
-    rec = _dict(_dict(read_json_quiet(PROBES_FILE).get("projects")).get(root))
     if ci:
         r.skip("tool-set record (kept in your ~/.claude, not the CI runner's)")
-    elif rec.get("tools") == tools_now:
-        r.ok(f"MCP servers and plugins unchanged since {rec.get('recorded', '?')}")
-    elif rec.get("tools"):
-        msg = (f"MCP servers or enabled plugins changed since {rec.get('recorded', '?')}: review them, "
-               f"then `sous probe --record {root}`")
-        r.bad("strict: " + msg) if strict else r.info(msg)
     else:
-        r.info(f"no tool-set baseline: `sous probe --record {root}` records the MCP servers and plugins as is")
+        rec = _dict(probe_records().get(root))
+        state, lines = tools_drift(root, [user or {}, s, local], rec)
+        when = rec.get("tools_recorded") or rec.get("recorded", "?")
+        if state == "same":
+            r.ok(f"MCP servers and plugins unchanged since {when}")
+        elif state == "legacy-same":
+            r.ok(f"MCP servers and plugins unchanged since {when} (versions only: `sous accept {root}` also "
+                 "records hook, bin/, MCP and tool-request content)")
+        elif state in ("changed", "legacy-changed"):
+            msg = f"MCP servers or enabled plugins changed since {when}: review them, then `sous accept {root}`"
+            r.bad("strict: " + msg) if strict else r.info(msg)
+            for ln in lines[:20]:
+                r.info(ln)
+            if len(lines) > 20:
+                r.info(f"... and {len(lines) - 20} more")
+            if state == "legacy-changed":
+                r.info("this record is a hash from before `sous accept`, so what changed can't be named")
+        else:
+            r.info(f"no tool-set baseline: `sous accept {root}` records the MCP servers and plugins as is")
 
     print("Layer 3 permissions + sandbox")
     lacks = missing(REQUIRED_DENY, perm.get("deny"))
@@ -1188,12 +1410,12 @@ def doctor(root, ios, strict, mode):
     if ci:
         r.skip("live probe record (kept in your ~/.claude, not the CI runner's)")
     else:
-        rec = _dict(_dict(read_json_quiet(PROBES_FILE).get("projects")).get(root))
+        rec = _dict(probe_records().get(root))
         if rec.get("fingerprint") == settings_fingerprint(eff):
             r.ok(f"probed live {rec.get('recorded', '?')} (your record; sous can't watch a session)")
         else:
-            why = (f"permissions or sandbox changed since the probe on {rec.get('recorded', '?')}" if rec
-                   else "sandbox never probed live")
+            why = (f"permissions or sandbox changed since the probe on {rec.get('recorded', '?')}"
+                   if rec.get("fingerprint") else "sandbox never probed live")
             msg = f"{why}: run the `sous probe` prompts in a fresh session, then `sous probe --record {root}`"
             r.bad("strict: " + msg) if strict else r.info(msg)
     allow, ask = _rules(perm.get("allow")), _rules(perm.get("ask"))
@@ -1672,6 +1894,45 @@ def gate_tests_weakened(c):
         f"run `tests-weakened {c.base}` in {c.root}"
 
 
+# Release notes: user-visible paths (what a plugin ships) and the manifests that
+# carry a version. Only a version with no CHANGELOG heading fails: that is a
+# release nobody can read about. A missing line for a change only warns.
+RELEASE_PATHS = ("bin/", "commands/", "hooks/", "skills/")
+VERSION_FILES = (".claude-plugin/plugin.json", "package.json")
+
+
+@gate_check("release-notes")
+def gate_release_notes(c):
+    log = os.path.join(c.root, "CHANGELOG.md")
+    if not os.path.isfile(log):
+        return "skip", "no CHANGELOG.md", ""
+    with open(log, errors="replace") as f:
+        text = f.read()
+    for rel in VERSION_FILES:
+        if rel not in c.changed or not os.path.isfile(os.path.join(c.root, rel)):
+            continue
+        try:
+            old = json.loads(git(c.root, "show", f"{c.merge_base}:{rel}") or "null")
+        except ValueError:
+            old = None
+        new = read_json_quiet(os.path.join(c.root, rel)).get("version")
+        if not isinstance(old, dict) or not isinstance(new, str) or old.get("version") in (None, new):
+            continue
+        if not re.search(rf"^##+\s+\[?v?{re.escape(new)}\]?(\s|$)", text, re.M):
+            return "fail", f"version {new} in {rel} has no CHANGELOG.md heading", \
+                f"add `## {new}` to CHANGELOG.md, with what changed"
+    shipped = [p for p in c.changed if p.startswith(RELEASE_PATHS)]
+    if not shipped:
+        return "ok", "no change under " + ", ".join(RELEASE_PATHS), ""
+    diff = git(c.root, "diff", c.merge_base, "--", "CHANGELOG.md") or ""
+    added = [ln for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++") and ln[1:].strip()]
+    if added or ("CHANGELOG.md" in c.changed and not git(c.root, "ls-files", "--", "CHANGELOG.md")):
+        return "ok", f"CHANGELOG.md has new lines for {len(shipped)} shipped path(s)", ""
+    more = f" (+{len(shipped) - 2} more)" if len(shipped) > 2 else ""
+    return "warn", f"{', '.join(shipped[:2])}{more} changed with no new CHANGELOG.md line", \
+        "add a line under ## Unreleased in CHANGELOG.md, or ignore if users won't notice"
+
+
 @gate_check("blocks")
 def gate_blocks(c):
     if BLOCK_LOG == "off":
@@ -1728,6 +1989,27 @@ def gate_worktree_settings(c):
         return "warn", f"harness differs from the main checkout {main['path']}: " + "; ".join(diffs), \
             "compare them: a gitignored file (settings.local.json) is not checked out into a new worktree"
     return "ok", "same harness files as the main checkout", ""
+
+
+@gate_check("tools-drift")
+def gate_tools_drift(c):
+    if in_ci():
+        return "skip", "the accepted tool surface is kept in your ~/.claude, not the CI runner's", ""
+    rec = _dict(probe_records().get(c.root))
+    state, lines = tools_drift(c.root, tool_layers(c.root), rec)
+    q, when = shlex.quote(c.root), rec.get("tools_recorded") or rec.get("recorded", "?")
+    if state == "none":
+        return "info", f"no accepted tool surface: `sous accept {q}` records MCP servers and plugin hooks, " \
+            "bin/ and tool requests", ""
+    if state == "legacy-same":
+        return "info", f"hash-only tool record from {when}: `sous accept {q}` once, so changes get named", ""
+    if state == "same":
+        return "ok", f"MCP servers and plugin surface unchanged since accepted {when}", ""
+    fix = f"review `sous doctor {q}`, then `sous accept {q}`"
+    if state == "legacy-changed":
+        return "warn", f"MCP servers or enabled plugins changed since {when} (hash-only record)", fix
+    more = f" (+{len(lines) - 3} more)" if len(lines) > 3 else ""
+    return "warn", f"{len(lines)} change(s) since accepted {when}: " + "; ".join(lines[:3]) + more, fix
 
 
 @gate_check("scoped")
@@ -1936,13 +2218,15 @@ OPTIONS = {
     "status": {"--ios", "--strict"},
     "check": set(),
     "probe": {"--record"},
+    "accept": set(),
     "report": {"--days="},
     "lint": {"--fix", "--dry-run"},
     "marketplace-check": {"--offline", "--timeout="},
     "gate": {"--base=", "--json", "--test-log=", "--transcript=", "--ack-blocks"},
     "fleet": {"--base=", "--json"},
 }
-NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint", "gate", "fleet"}
+NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint", "gate", "fleet",
+             "accept"}
 
 
 def usage(msg):
@@ -1997,6 +2281,8 @@ def main(argv):
                     opts.get("--transcript"), bool(opts.get("--ack-blocks")))
     if cmd == "fleet":
         return fleet(root, opts.get("--base"), bool(opts.get("--json")))
+    if cmd == "accept":
+        return accept(root)
     if cmd == "probe":
         if opts.get("--record"):
             if not os.path.isdir(root):
