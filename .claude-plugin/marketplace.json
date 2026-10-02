@@ -50,6 +50,21 @@
         "name": "Oren Segal"
       },
       "license": "MIT"
+    },
+    {
+      "name": "deuce",
+      "source": {
+        "source": "github",
+        "repo": "OrenSegal/deuce",
+        "ref": "v0.1.0",
+        "sha": "748a7742562d1fb68eec9e40d4eac4f40fdced7e"
+      },
+      "description": "Post-merge cleanup: finds merged branches, dry-runs the sweep, then removes worktrees and local and remote branches on approval, with an audit log and undo.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Oren Segal"
+      },
+      "license": "MIT"
     }
   ]
 }

@@ -10,6 +10,7 @@ sous: tools for checking what coding agents actually do.
 | [litmus](https://github.com/OrenSegal/litmus) | Skill and prompt evals that could never have failed | `claude plugin install litmus@sous` |
 | [cited](https://github.com/OrenSegal/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
 | [scoped](https://github.com/OrenSegal/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
+| [deuce](https://github.com/OrenSegal/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
 
 Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
 The rest of this page is about sous itself: a Claude Code harness you install
