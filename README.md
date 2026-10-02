@@ -92,6 +92,28 @@ Three claims, each one checked by something you can run:
    (`python -c "open('.claude/settings.json','w')..."`) is not a text match, so
    the OS sandbox's write scope is the boundary there.
 
+Around those claims:
+
+- **Loop breaker.** The third identical block within two minutes adds "Stop
+  retrying this; ask the user" to what the agent sees. It reads the same
+  reason-only log, so no command text is kept.
+- **Block rate.** The guard counts allowed commands as one byte per day in
+  `blocks.tsv.allowed.YYYYMMDD`, never their text, and `sous report` shows
+  "N blocks, M allowed (x% blocked)". It is a block rate, not a false-positive
+  rate: you still judge each reason by hand.
+- **Hidden-instruction scan.** `sous lint` and `sous doctor` flag invisible
+  characters (zero-width, bidi controls, tag characters) and lines that tell the
+  agent to drop its instructions, hide something from the user or send a secret
+  out, in memory files, skills, commands, agents and `.mcp.json`. Patterns are a
+  short list, so a clean scan is not proof. `--strict` fails on a hit.
+- **Spend.** Claude Code has no settings key for a budget, so `doctor --strict`
+  reminds you to cap an unattended run with `claude -p --max-budget-usd N`.
+- **Other agents.** `sous compile --to=agents|cursor|copilot` writes the deny
+  rules as plain instructions (`AGENTS.md`, `.cursor/rules/sous.mdc`,
+  `.github/copilot-instructions.md`), printing by default and writing a marked
+  block with `--write`; `--remove` takes it out. Those agents read it as a
+  request. Only Claude Code enforces the rules.
+
 A change to the tool set shows too: `sous probe --record` fingerprints the
 `.mcp.json` servers (names and shape, never env or header values) and the
 enabled plugins with their versions. `sous doctor` notes drift, and `--strict`
