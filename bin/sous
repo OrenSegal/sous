@@ -86,8 +86,9 @@ REQUIRED_ASK = ["Bash(git push:*)", "Bash(git commit:*)", "Bash(dangerouslyDisab
 REQUIRED_IOS_EXCLUDED = ["xcodebuild *", "xcrun *"]
 # The harness's own switches. Claude Code prompts before the agent writes these, but
 # bypassPermissions allows it; a deny rule holds in every mode. Claude Code's docs
-# say Edit rules also stop Bash redirects and tee into the path; other Bash writes
-# (sed -i, an interpreter) are left to the guard and the sandbox.
+# say Edit rules also stop Bash redirects and tee into the path; the guard blocks
+# those and the other Bash writes (cp, mv, sed -i, an interpreter call naming the
+# path), and the sandbox covers a path built at runtime.
 REQUIRED_TAMPER_DENY = ["Edit(.claude/settings.json)", "Edit(.claude/settings.local.json)",
                         "Edit(.claude/hooks/**)", "Edit(.mcp.json)"]
 

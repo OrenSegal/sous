@@ -83,9 +83,12 @@ Three claims, each one checked by something you can run:
    `.claude/settings.json`, `.claude/settings.local.json`, `.claude/hooks/**`
    and `.mcp.json`. Deny rules hold in every permission mode, and the existing
    bypass-mode check covers the mode that skips `ask`. `sous doctor` fails when
-   one is missing. Known gap: an interpreter writing the file
-   (`python -c "open('.claude/settings.json','w')..."`) is not a text match, so
-   the OS sandbox's write scope is the boundary there.
+   one is missing. The guard blocks the Bash spellings of the same write:
+   redirects, `tee`, `cp`/`mv`/`install`/`ln`, `sed -i`, `perl -i`, `dd of=`,
+   `rm`/`chmod`/`truncate`, and interpreter calls such as
+   `python -c "open('.claude/settings.json','w')"`. A path held in a variable
+   or reached after `cd` is a known gap ([SECURITY.md](SECURITY.md)); the OS
+   sandbox's write scope is the boundary there.
 
 A change to the tool set shows too: `sous probe --record` fingerprints the
 `.mcp.json` servers (names and shape, never env or header values) and the
