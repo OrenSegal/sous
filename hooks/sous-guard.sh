@@ -15,6 +15,9 @@
 #   build    decode or fetch piped into a shell (through sudo/env/VAR=) or an
 #            interpreter reading stdin, sh -c "$(curl ...)", bash <(curl ...),
 #            <<< "$(curl ...)", eval of a decoded or fetched string
+#   tamper   a Bash write to .claude/settings*.json, .claude/hooks/ or .mcp.json:
+#            redirect, tee, cp/mv/install/ln, sed/perl -i, dd of=, rm/chmod,
+#            an interpreter write call naming the path (temp-dir fixtures pass)
 #
 # Two ways to use it:
 #   executed  reads the hook JSON on stdin; exit 2 blocks, stderr goes to the model
@@ -314,6 +317,25 @@ _sous_match() {
     return 1
   fi
 
+  # 6b. Harness tamper: a Bash write to .claude/settings*.json, .claude/hooks/
+  #     or .mcp.json, the files that hold the harness. The Edit deny rules cover
+  #     the Edit/Write tools; this covers redirects, tee, cp/mv/install/ln,
+  #     sed/perl -i, dd of=, rm/chmod/truncate, and interpreter write calls
+  #     naming the path. Reading, git, and paths under /tmp or $TMPDIR (test
+  #     fixtures) pass. A path built in a variable or reached after cd is a gap.
+  if [[ $norm == *.claude/* || $norm == *.mcp.json* ]] && ! _sous_tamper "$norm" "$has_interp"; then
+    echo "BLOCKED (sous): writing a harness file (.claude/settings*.json, .claude/hooks/, .mcp.json) from Bash. Show the user the change; they make it."
+    return 1
+  fi
+
+  # 6c. `sous accept` records the current plugin surface as the reviewed one, so
+  #     a session that can run it can clear its own drift report. The user runs it.
+  local re_accept='(^|[;&|(])[[:space:]]*([^[:space:]]*/)?sous[[:space:]]+accept([[:space:]]|$)'
+  if [[ $norm =~ $re_accept ]]; then
+    echo "BLOCKED (sous): sous accept marks plugin changes as reviewed. Show the user the drift; they run it."
+    return 1
+  fi
+
   # 7. Building a command out of sight: decode or fetch, then run it.
   #    A pipe (not ||) into a shell, through sudo/env/VAR=, or a fetch piped into
   #    an interpreter reading stdin; a shell fed $(fetch), <(fetch) or <<<.
@@ -332,6 +354,106 @@ _sous_match() {
     echo "BLOCKED (sous): piping generated or downloaded text into a shell. Save it to a file, show it, then run it."
     return 1
   fi
+  return 0
+}
+
+# Returns 1 when $1 (normalized command text) writes a harness file; $2 is 1
+# when an interpreter runs in it. Step 6b of _sous_match.
+_sous_tamper() {
+  local LC_ALL=C
+  local t="$1" out="" rest m seg tok first n args target src inplace
+  local p='(\.claude/(settings(\.local)?\.json|hooks(/[^[:space:];&|<>(),]*)?)|\.mcp\.json)'
+  local end='([^[:alnum:]_.-]|$)'
+  # A harness path under /tmp, /private/tmp, /var/folders or $TMPDIR is a test
+  # fixture: blank it, unless the command climbs out with /../.
+  local re_tmp='(^|[[:space:]=>(,])((/private)?/tmp/|/var/folders/|\$\{?TMPDIR\}?/?)[^[:space:];&|<>(),]*'
+  if [[ $t != */../* ]]; then
+    rest="$t"
+    while [[ $rest =~ $re_tmp ]]; do
+      m="${BASH_REMATCH[0]}"
+      out+="${rest%%"$m"*}"
+      rest="${rest#*"$m"}"
+      if [[ $m == *.claude/* || $m == *.mcp.json* ]]; then out+="${BASH_REMATCH[1]}TMP"; else out+="$m"; fi
+    done
+    t="$out$rest"
+  fi
+  # Redirect into the path, from any command: > >> >| &> 2> >&.
+  local re_redir=">[>|&]?[[:space:]]*([^[:space:];&|<>()]*/)?${p}${end}"
+  [[ $t =~ $re_redir ]] && return 1
+  # Interpreter write calls with the path as an argument (quotes are gone here).
+  if [[ $2 == 1 ]]; then
+    local arg="([^[:space:],;]*[/(])?${p}"
+    local w='(^|[^[:alnum:]_])'
+    local re_first="${w}(write|write_text|write_bytes|writeFile|writeFileSync|appendFile|appendFileSync|writeTextFile|writeTextFileSync|createWriteStream|outputFile|outputFileSync|writeJson|writeJsonSync|file_put_contents|truncate|truncateSync|remove|removeSync|unlink|unlinkSync|rm|rmSync|rm_f|delete|chmod|chmodSync|rename|renameSync|move|mv)\\([[:space:]]*${arg}${end}"
+    local re_later="${w}(copy|copy2|copyfile|copyFile|copyFileSync|cp|cpSync|copy_file|install|symlink|symlinkSync|link|linkSync|ln_s|ln_sf|rename|renameSync|os\\.replace|move|mv)\\([^)]*,[[:space:]]*${arg}${end}"
+    local re_open="${w}(open|fopen|openSync|File\\.open)\\([[:space:]]*${arg}[)]*[[:space:]]*,[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?[rbt]*[wax+]"
+    local re_path="Path\\([[:space:]]*${arg}[[:space:]]*\\)\\.(write_text|write_bytes|unlink|rename|replace|touch|chmod|open\\([[:space:]]*(mode[[:space:]]*=[[:space:]]*)?[rbt]*[wax+])"
+    local re_perl="${w}open\\([^,)]*,[[:space:]]*(\\+?>>?|\\+<)[[:space:]]*,[[:space:]]*${arg}${end}|${w}unlink[[:space:]]+${arg}${end}"
+    if [[ $t =~ $re_first || $t =~ $re_later || $t =~ $re_open || $t =~ $re_path || $t =~ $re_perl ]]; then
+      return 1
+    fi
+  fi
+  # Per command: the programs that write a path they are given.
+  local re_tok="^([^[:space:]]*[/=])?${p}[)]*\$"
+  local re_dir='^([^[:space:]]*/)?\.claude/?$'
+  local nl=$'\n' sep had_noglob=0 hit=0
+  for sep in '&&' '||' ';' '|' '&' '$(' '<(' '`'; do
+    t="${t//"$sep"/$nl}"
+  done
+  case $- in *f*) had_noglob=1 ;; esac
+  set -f
+  while IFS= read -r seg; do
+    first="" args=()
+    for tok in $seg; do
+      if [[ -z $first ]]; then
+        case "$tok" in
+          *=*|sudo|command|env|nice|-n|[0-9]*|do|then|else|time|exec|'{'|'(') continue ;;
+        esac
+        first="${tok##*/}"
+        continue
+      fi
+      args+=("$tok")
+    done
+    (( ${#args[@]} )) || continue
+    case $first in
+      tee|sponge|truncate|rm|grm|unlink|chmod|chown|chflags|patch|shred|mv|gmv)
+        for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
+      dd)
+        for tok in "${args[@]}"; do [[ $tok == of=* && $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
+      sed|gsed|perl|ruby)
+        inplace=0
+        for tok in "${args[@]}"; do [[ $tok =~ ^-[[:alnum:]]*i || $tok == --in-place* ]] && inplace=1; done
+        (( inplace )) || continue
+        for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
+      cp|gcp|install|ginstall|ln|gln|rsync|ditto)
+        # The destination: -t DIR, --target-directory=DIR, else the last operand.
+        target="" n=0 src=()
+        for tok in "${args[@]}"; do
+          if (( n )); then target="$tok"; n=0; continue; fi
+          case $tok in
+            -t) n=1 ;;
+            -t*) target="${tok#-t}" ;;
+            --target-directory=*) target="${tok#*=}" ;;
+            -*) ;;
+            *) src+=("$tok") ;;
+          esac
+        done
+        if [[ -z $target && ${#src[@]} -gt 1 ]]; then
+          target="${src[${#src[@]}-1]}"
+          unset "src[${#src[@]}-1]"
+        fi
+        [[ -n $target ]] || continue
+        if [[ $target =~ $re_tok ]]; then hit=1; break; fi
+        if [[ $target =~ $re_dir ]]; then
+          for tok in ${src[@]+"${src[@]}"}; do
+            tok="${tok%/}"
+            case "${tok##*/}" in settings.json|settings.local.json|hooks) hit=1; break 2 ;; esac
+          done
+        fi ;;
+    esac
+  done <<< "$t"
+  [ $had_noglob = 1 ] || set +f
+  (( hit )) && return 1
   return 0
 }
 
