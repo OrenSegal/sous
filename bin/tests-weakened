@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# tests-weakened: flag a diff that made the tests weaker instead of the code right.
+#
+# A change goes green by deleting the test that failed, skipping it, or loosening
+# what it asserts. tests-ran catches a run that executed nothing; this catches the
+# edit that made "nothing to fail" true. It reads the diff, not the code, so it
+# is a heuristic: a finding is a question for the author, with the lines to look at.
+#
+# Usage:
+#   tests-weakened                # working tree and index against HEAD
+#   tests-weakened origin/main    # this branch's changes since it forked from a ref
+#   git diff main... | tests-weakened -
+#
+# Findings, in test files only (test/, tests/, spec/, __tests__/, *_test.*,
+# *.test.*, *.spec.*, test_*.*, *Tests.swift):
+#   deleted    a test file removed, or more test functions removed than added
+#              (a rename is not a removal)
+#   skipped    a skip / disable / .only marker added (pytest, unittest, jest,
+#              vitest, XCTest, Swift Testing, Go, JUnit, Rust #[ignore])
+#   fewer      more assertion lines removed than added in one file
+#   trivial    an assertion that can't fail added (assert True, expect(true))
+#
+# Exit: 0 nothing flagged, 1 flagged, 2 usage error (no repo, unknown ref).
+# Runs on bash 3.2.
+
+tests_weakened_scan() { # reads a unified diff on stdin, prints one finding per line
+  awk '
+    function is_test(p) {
+      return p ~ /(^|\/)(tests?|spec|__tests__)\// || p ~ /(_test|\.test|\.spec)\.[A-Za-z0-9]+$/ ||
+             p ~ /(^|\/)test_[^\/]*$/ || p ~ /Tests?\.swift$/
+    }
+    function test_name(line,    t, m) {
+      t = line
+      if (match(t, /def test[A-Za-z0-9_]*/)) return substr(t, RSTART + 4, RLENGTH - 4)
+      if (match(t, /func [Tt]est[A-Za-z0-9_]*/)) return substr(t, RSTART + 5, RLENGTH - 5)
+      if (match(t, /(^|[^A-Za-z0-9_])(it|test|describe)(\.[a-z]+)?\(["\x27`][^"\x27`]*/)) {
+        m = substr(t, RSTART, RLENGTH); sub(/^[^"\x27`]*["\x27`]/, "", m); return m
+      }
+      if (match(t, /@Test(\([^)]*\))?[[:space:]]+func [A-Za-z0-9_]+/)) {
+        m = substr(t, RSTART, RLENGTH); sub(/^.*func /, "", m); return m
+      }
+      if (match(t, /@Test\("[^"]*"/)) { m = substr(t, RSTART + 7, RLENGTH - 8); return m }
+      return ""
+    }
+    function flush(    k, n, ua) {
+      if (file == "" || !intest) return
+      # A rename removes one name and adds another: only removals beyond the new names count.
+      ua = 0; for (k in added) if (!(k in removed)) ua++
+      for (k in removed) if (!(k in added)) {
+        if (ua > 0) { ua--; continue }
+        print "deleted: " file ": test \"" k "\" removed and not re-added"
+      }
+      if (rem_assert > add_assert)
+        print "fewer: " file ": " rem_assert + 0 " assertion line(s) removed, " add_assert + 0 " added"
+      delete removed; delete added; rem_assert = 0; add_assert = 0
+    }
+    BEGIN {
+      skip_re = "(@pytest\\.mark\\.(skip|xfail)|@unittest\\.skip|pytest\\.(skip|xfail)\\(|(^|[^A-Za-z0-9_])(xit|xdescribe|xtest|fit|fdescribe)\\(|\\.(skip|only|todo)\\(|XCTSkip|\\.disabled\\(|@Disabled|t\\.Skip\\(|#\\[ignore\\]|\\[Ignore\\]|@Ignore|pending\\()"
+      # require. is testify; require( is a JS import, not an assertion.
+      assert_re = "(^|[^A-Za-z0-9_])(assert[A-Za-z_]*|expect|XCTAssert[A-Za-z]*|EXPECT_[A-Z_]+|ASSERT_[A-Z_]+)[[:space:](.!]|(^|[^A-Za-z0-9_])require\\.|#expect|#require|\\.should|t\\.(Error|Fatal)f?\\(|assert!|assert_eq!"
+      trivial_re = "(assert[[:space:](]+True([[:space:])]|$)|assertTrue\\(True\\)|expect\\(true\\)\\.toBe\\(true\\)|expect\\(1\\)\\.toBe\\(1\\)|XCTAssertTrue\\(true\\)|assert[[:space:](]+1[[:space:]]*==[[:space:]]*1|#expect\\(true\\))"
+    }
+    /^diff --git / { flush(); file = ""; intest = 0; next }
+    /^deleted file mode/ { gone = 1; next }
+    /^\+\+\+ / {
+      p = $2; sub(/^b\//, "", p)
+      if (p == "/dev/null") { p = prev }
+      file = p; intest = is_test(file)
+      if (gone && intest) print "deleted: " file ": test file removed"
+      gone = 0; next
+    }
+    /^--- / { prev = $2; sub(/^a\//, "", prev); next }
+    !intest { next }
+    /^-/ {
+      line = substr($0, 2)
+      n = test_name(line); if (n != "") removed[n] = 1
+      if (line ~ assert_re) rem_assert++
+      next
+    }
+    /^\+/ {
+      line = substr($0, 2)
+      n = test_name(line); if (n != "") added[n] = 1
+      if (line ~ assert_re) add_assert++
+      if (line ~ skip_re) print "skipped: " file ": " line
+      if (line ~ trivial_re) print "trivial: " file ": " line
+      next
+    }
+    END { flush() }
+  ' | sed 's/[[:space:]]\{1,\}/ /g'
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  set -uo pipefail
+  case "${1:-}" in
+    -h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  esac
+  if [ "${1:-}" = - ]; then
+    findings=$(tests_weakened_scan)
+  else
+    command -v git >/dev/null 2>&1 || { echo "tests-weakened: git not found; pipe a diff with '-'" >&2; exit 2; }
+    git rev-parse --git-dir >/dev/null 2>&1 || { echo "tests-weakened: not a git repository" >&2; exit 2; }
+    # A ref that doesn't resolve must not read as "nothing flagged".
+    git rev-parse --verify --quiet "${1:-HEAD}^{commit}" >/dev/null ||
+      { echo "tests-weakened: ${1:-HEAD} is not a commit" >&2; exit 2; }
+    # From the merge base, not the ref's tip: tests the base branch gained after
+    # this branch forked would otherwise read as deleted here.
+    base=$(git merge-base "${1:-HEAD}" HEAD 2>/dev/null) || base="${1:-HEAD}"
+    findings=$(git diff --no-color --no-ext-diff "$base" -- | tests_weakened_scan) || true
+  fi
+  if [ -n "$findings" ]; then
+    printf '%s\n' "$findings"
+    echo "tests-weakened: the diff weakens the tests. Show why each change is right, or restore it." >&2
+    exit 1
+  fi
+  echo "tests-weakened: nothing flagged"
+fi

@@ -90,5 +90,17 @@ harmless
 EOF
 rm -rf build"
 
+# The block log's third column names the project, so `sous gate` and `sous fleet`
+# can tell worktrees apart: $CLAUDE_PROJECT_DIR, else the hook's working directory.
+# A tab or newline in it would break the row, so they become spaces.
+: >"$SOUS_LOG"
+unset CLAUDE_PROJECT_DIR
+CLAUDE_PROJECT_DIR=$'/w/one\ttwo\nthree' check 2 'rm -rf build'
+check 2 'rm -rf build'
+want=$(printf '/w/one two three\n%s' "$(cd "$SANDBOX_DIR" && pwd)")
+if [ "$(cut -f3 "$SOUS_LOG")" = "$want" ] && [ "$(wc -l <"$SOUS_LOG")" -eq 2 ]; then pass=$((pass + 1)); else
+  fail=$((fail + 1)); printf 'FAIL block log path column: want\n%s\ngot:\n' "$want" >&2; cat "$SOUS_LOG" >&2
+fi
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
