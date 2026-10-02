@@ -7,7 +7,7 @@ BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselv
   exit 2
 
 $ sh -c 'cat .env'
-BLOCKED (sous): sh touches .env, a secrets file. Read .env.example for the key names.
+BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names.
   exit 2
 
 $ git status && ls src

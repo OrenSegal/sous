@@ -36,7 +36,8 @@ SOUS_GUARD_VERSION=0.3.0
 # Prints the block reason and returns 1 when $1 must not run; returns 0 otherwise.
 # Every block appends "epoch<TAB>reason<TAB>project dir" to $SOUS_LOG (default
 # ~/.claude/sous/blocks.tsv; SOUS_LOG=off disables). Reason only, never the
-# command: command text can carry secrets. `sous report` reads it back so the
+# command: command text can carry secrets, so a reason is fixed text or a name
+# from a closed list, never text copied from the command. `sous report` reads it back so the
 # rules get tuned from what fired, not from memory; the directory
 # ($CLAUDE_PROJECT_DIR, else the hook's cwd) lets `sous gate` and `sous fleet`
 # tell worktrees apart.
@@ -66,7 +67,7 @@ sous_guard() {
         [[ $ts =~ ^[0-9]+$ && $r == "$reason" && $w == "$where" && $((now - ts)) -le 120 ]] && repeats=$((repeats + 1))
       done < <(tail -n 8 "$log" 2>/dev/null)
     fi
-    [[ $repeats -ge 2 ]] && shown="$reason Blocked $((repeats + 1)) times in a row. Stop retrying this; ask the user how they want to proceed."
+    [[ $repeats -ge 2 ]] && shown="$reason Blocked at least $((repeats + 1)) times for the same reason in the last two minutes. Stop retrying this; ask the user how they want to proceed."
     { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\n' "$now" "$reason" "$where" >>"$log"; } 2>/dev/null
   fi
   printf '%s\n' "$shown"
@@ -296,7 +297,7 @@ _sous_match() {
       case "$low" in
         *.example|*.sample|*.template|*.dist) continue ;;
       esac
-      reason="$first touches $tok, a secrets file. Read .env.example for the key names."
+      reason="the command names .env or a variant, a secrets file. Read .env.example for the key names."
       break 2
     done
     # A glob that starts with a dot reaches dotfiles: .e*, .[e]nv, .?nv, .*
@@ -309,7 +310,7 @@ _sous_match() {
       for cand in .env .env.local .envrc .env.production .env.development; do
         # shellcheck disable=SC2053  # $low is the user's glob, matched on purpose
         if [[ $cand == $low ]]; then
-          reason="$first $tok reaches $cand, a secrets file. Read .env.example for the key names."
+          reason="a dot-glob in the command reaches $cand, a secrets file. Read .env.example for the key names."
           break 3
         fi
       done
