@@ -4,7 +4,7 @@
 Agent = model + harness. sous covers the harness in five layers:
 
   1 memory       CLAUDE.md / AGENTS.md
-  2 tools        .mcp.json, plugins (reported, not enforced)
+  2 tools        .mcp.json, plugins (fingerprinted, so drift shows)
   3 permissions  settings.json deny/ask + the OS sandbox (Seatbelt / bubblewrap)
   4 hooks        sous-guard.sh PreToolUse hard stops
   5 gates        ask rules on push/commit/PR, bypass mode disabled
@@ -20,6 +20,8 @@ Usage:
   sous probe     [--record DIR]                        live red-team prompts for a fresh session;
                                                        --record notes that you ran them and they held
   sous report    [--days=N]                            what the guard blocked, and how to tune it
+  sous lint      [DIR] [--fix] [--dry-run]             "never X" lines in CLAUDE.md / AGENTS.md that no deny rule
+                                                       or guard rule enforces; --fix adds them as deny rules
   sous marketplace-check [REPO] [--offline] [--timeout=S]
                                                        verify each pinned plugin ref resolves to its sha
   sous --version
@@ -40,6 +42,7 @@ not reach the network (nothing was disproved).
 import collections
 import copy
 import filecmp
+import fnmatch
 import glob
 import hashlib
 import json
@@ -74,6 +77,12 @@ REQUIRED_DENY = [
 ]
 REQUIRED_ASK = ["Bash(git push:*)", "Bash(git commit:*)", "Bash(dangerouslyDisableSandbox:true)"]
 REQUIRED_IOS_EXCLUDED = ["xcodebuild *", "xcrun *"]
+# The harness's own switches. Claude Code prompts before the agent writes these, but
+# bypassPermissions allows it; a deny rule holds in every mode. Claude Code's docs
+# say Edit rules also stop Bash redirects and tee into the path; other Bash writes
+# (sed -i, an interpreter) are left to the guard and the sandbox.
+REQUIRED_TAMPER_DENY = ["Edit(.claude/settings.json)", "Edit(.claude/settings.local.json)",
+                        "Edit(.claude/hooks/**)", "Edit(.mcp.json)"]
 
 
 class SettingsError(Exception):
@@ -448,6 +457,63 @@ def settings_fingerprint(effective):
     return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def mcp_servers(root):
+    """{name: shape} for the project's .mcp.json, without env or header values
+    (they hold secrets, and a fingerprint of them would change on rotation)."""
+    servers = _dict(read_json_quiet(os.path.join(root, ".mcp.json")).get("mcpServers"))
+    out = {}
+    for name, spec in servers.items():
+        spec = _dict(spec)
+        out[name] = {"command": spec.get("command"), "args": spec.get("args"), "url": spec.get("url"),
+                     "type": spec.get("type"), "env": sorted(_dict(spec.get("env"))),
+                     "headers": sorted(_dict(spec.get("headers")))}
+    return out
+
+
+def enabled_plugins(layers):
+    """Plugin names enabled across user, project and local settings."""
+    enabled = {}
+    for data in layers:
+        ep = _dict(data).get("enabledPlugins")
+        if isinstance(ep, dict):
+            enabled.update(ep)
+    return sorted(k for k, v in enabled.items() if v is True and isinstance(k, str))
+
+
+def tools_fingerprint(root, layers):
+    """Layer 2 as a hash: the MCP server set and the enabled plugins with the
+    version or commit each resolves to. A changed server command, a swapped
+    plugin or a bumped sha moves it; an env value does not."""
+    installed = _dict(read_json_quiet(INSTALLED_PLUGINS).get("plugins"))
+    plugins = {}
+    for name in enabled_plugins(layers):
+        entries = installed.get(name)
+        plugins[name] = sorted({f"{_dict(e).get('version')}@{_dict(e).get('gitCommitSha')}"
+                                for e in (entries if isinstance(entries, list) else [])})
+    core = {"mcp": mcp_servers(root), "plugins": plugins}
+    return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def unpinned_mcp(servers):
+    """MCP servers launched by a package runner with no version pin, or over
+    plain http: whatever the registry or host serves next runs with your access."""
+    out = []
+    for name, spec in servers.items():
+        args = [a for a in (spec.get("args") or []) if isinstance(a, str)]
+        cmd = os.path.basename(spec.get("command") or "")
+        if cmd in ("npx", "bunx", "pnpx", "uvx", "pipx"):
+            words = [a for a in args if not a.startswith("-")]
+            if cmd == "pipx" and words[:1] == ["run"]:
+                words = words[1:]  # `pipx run PKG`: run is the subcommand
+            pkg = next(iter(words), "")
+            if not re.search(r"(?<=.)@[\w.^~<>=-]*\d|==\d", pkg):
+                out.append(f"{name} ({cmd} {pkg or '?'} has no version pin)")
+        url = spec.get("url")
+        if isinstance(url, str) and url.startswith("http://") and not re.match(r"http://(localhost|127\.)", url):
+            out.append(f"{name} ({url} is plain http)")
+    return out
+
+
 def load_project(root):
     """(settings, local, effective) for root; raises SettingsError."""
     claude = os.path.join(root, ".claude")
@@ -459,7 +525,7 @@ def load_project(root):
 
 def probe_record(root):
     try:
-        effective = load_project(root)[2]
+        base, local, effective = load_project(root)
     except SettingsError as e:
         print(f"sous: {e}", file=sys.stderr)
         return 1
@@ -468,7 +534,9 @@ def probe_record(root):
     except SettingsError:
         data = {}
     projects = _dict(data.get("projects"))
+    layers = [] if in_ci() else [read_json_quiet(USER_SETTINGS)]
     projects[root] = {"fingerprint": settings_fingerprint(effective),
+                      "tools": tools_fingerprint(root, layers + [base, local]),
                       "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "sous": SOUS_VERSION}
     os.makedirs(os.path.dirname(PROBES_FILE), exist_ok=True)
     write_json_atomic(PROBES_FILE, {"sous_probes": 1, "projects": projects})
@@ -819,6 +887,173 @@ def marketplace_check(repo, offline, timeout):
     return 75 if unreachable else 0
 
 
+# ------------------------------------------------------------------------ lint
+# A "never X" in CLAUDE.md is a request; a deny rule or the guard is a control.
+# Only about 1 in 20 written security rules has a control behind it (arXiv 2608.23550),
+# so lint reads the prohibitions and asks, for each one that names a command or a
+# path in backticks, whether anything enforces it. It judges the real guard, not a copy of its table.
+PROHIBIT = re.compile(r"\b(never|must not|mustn't|do not|don't|forbidden|prohibited|not allowed to)\b", re.I)
+# A comma ends the clause unless a list goes on (`a`, `b` or `c`): in "don't use
+# `pip`, use `uv`" the second span is the advice, not the prohibition.
+CLAUSE_END = re.compile(r";|\.\s|\s(?:\u2014|--)\s|\b(?:instead|unless|except|but)\b|,(?!\s*(?:`|or\b|and\b|nor\b))",
+                        re.I)
+SPAN = re.compile(r"`([^`\n]+)`")
+READS = re.compile(r"\b(read|reads|reading|open|view|cat|print|show|expose|leak)\b", re.I)
+# "Never skip `make lint`", "never commit without `make test`": the command is the
+# one that must run, so denying it would forbid the opposite of what was written.
+MUST_RUN = re.compile(r"\b(skip|skipping|omit|bypass|forget|ignore|disable|without)\b", re.I)
+LIST_GLUE = re.compile(r"[\s,]*(?:(?:or|and|nor)\s*)?", re.I)
+
+
+def _span_kind(span):
+    """'path', 'command' or None for a backticked span in a prohibition."""
+    span = span.strip()
+    if not span or "://" in span or re.search(r"[<>$|&;(){}*?\\]", span):
+        return None
+    toks = span.split()
+    first = os.path.basename(toks[0]) if toks[0] != "sudo" or len(toks) < 2 else os.path.basename(toks[1])
+    if len(toks) == 1 and (span.startswith((".", "~", "/")) or "/" in span or re.search(r"\.\w{1,6}$", span)):
+        return "path"
+    if re.fullmatch(r"[a-z][\w.+-]*", first) and shutil.which(first):
+        return "command"
+    return None
+
+
+def rule_covers(rule, kind, span, tool=None):
+    """Whether one permission rule (allow/ask/deny syntax) covers span. For a
+    path, tool ("Read" or "Edit") narrows it: a Read rule doesn't stop an edit."""
+    if not isinstance(rule, str) or rule.startswith("!"):
+        return False
+    m = re.match(r"^(Bash|Read|Edit)\((.*)\)$", rule.strip())
+    if not m or (kind == "command") != (m.group(1) == "Bash") or (tool and m.group(1) != tool):
+        return False
+    tool, inner = m.groups()
+    if tool == "Bash":
+        if inner.endswith(":*"):
+            return span == inner[:-2] or span.startswith(inner[:-2] + " ")
+        return fnmatch.fnmatchcase(span, inner) or span == inner
+    path = re.sub(r"^\./", "", span).rstrip("/")
+    pat = re.sub(r"^\.?/", "", inner).replace("**", "*").rstrip("/")
+    return any(fnmatch.fnmatchcase(c, g) for c in (path, os.path.basename(path)) for g in (pat, pat + "/*"))
+
+
+def guard_blocks(guard, bash, command):
+    """Whether the guard stops command: exit 2 from the hook."""
+    payload = json.dumps({"tool_input": {"command": command}})
+    try:
+        res = subprocess.run([bash, guard], input=payload, text=True, capture_output=True, timeout=10,
+                             env=dict(os.environ, SOUS_LOG="off"))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return res.returncode == 2
+
+
+def lint_prose(root, settings, files):
+    """Read the prohibitions in memory files: {covered, unmapped, uncovered}.
+    uncovered rows are (file, line, kind, span, suggested deny rules)."""
+    perm = _dict(settings.get("permissions"))
+    held = _rules(perm.get("deny")) + _rules(perm.get("ask"))
+    held_paths = [x for x in _rules(_dict(_dict(settings.get("sandbox")).get("filesystem")).get("denyRead"))]
+    guard = next(iter(guards_in(settings, root)), None) or HOOK_SRC
+    bash = shutil.which("bash")
+    out = {"covered": 0, "unmapped": 0, "uncovered": []}
+    seen = set()
+    for name in files:
+        try:
+            with open(os.path.join(root, name), errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        fenced = False
+        for n, line in enumerate(lines, 1):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            pos = 0
+            while not fenced:  # every prohibition on the line: "never X; never Y" is two
+                m = PROHIBIT.search(line, pos)
+                if not m:
+                    break
+                end = CLAUSE_END.search(line, m.end())
+                clause = line[m.start():end.start() if end else len(line)]
+                pos = end.end() if end else len(line)
+                targets, prev, reads, must_run = [], 0, False, False
+                for sm in SPAN.finditer(clause):
+                    # the verb just before a span decides what is forbidden; a list
+                    # ("read `a` or `b`") carries the verb on to the next span
+                    lead = clause[prev:sm.start()]
+                    if prev == 0 or not LIST_GLUE.fullmatch(lead):
+                        reads, must_run = bool(READS.search(lead)), bool(MUST_RUN.search(lead))
+                    kind = _span_kind(sm.group(1))
+                    if kind and not (kind == "command" and must_run):
+                        targets.append((kind, sm.group(1).strip(), reads))
+                    prev = sm.end()
+                if not targets:
+                    out["unmapped"] += 1
+                    continue
+                for kind, span, reads in targets:
+                    if (kind, span, reads) in seen:
+                        continue
+                    seen.add((kind, span, reads))
+                    if kind == "command":
+                        rules = [] if (any(rule_covers(r, kind, span) for r in held)
+                                       or (bash and guard_blocks(guard, bash, span))) else [f"Bash({span}:*)"]
+                    else:
+                        path = re.sub(r"^\./", "", span)
+                        pat = path + "**" if path.endswith("/") else path
+                        edit_ok = any(rule_covers(r, kind, span, "Edit") for r in held)
+                        read_ok = (not reads or any(rule_covers(r, kind, span, "Read") for r in held)
+                                   or any(rule_covers(f"Read({h})", kind, span) for h in held_paths))
+                        if not (edit_ok and read_ok) and bash and guard_blocks(guard, bash, "cat " + span):
+                            edit_ok = read_ok = True  # the guard stops any Bash call naming it
+                        rules = ([] if edit_ok else [f"Edit({pat})"]) + ([] if read_ok else [f"Read({pat})"])
+                    if rules:
+                        out["uncovered"].append((name, n, kind, span, rules))
+                    else:
+                        out["covered"] += 1
+    return out
+
+
+def lint(root, fix, dry_run):
+    claude = os.path.join(root, ".claude")
+    settings_path = os.path.join(claude, "settings.json")
+    try:
+        settings, lenient = read_json(settings_path) if os.path.isfile(settings_path) else ({}, False)
+        local = read_json(os.path.join(claude, "settings.local.json"))[0] \
+            if os.path.isfile(os.path.join(claude, "settings.local.json")) else {}
+    except SettingsError as e:
+        print(f"sous: {e}", file=sys.stderr)
+        return 1
+    files = [n for n in ("CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md") if os.path.isfile(os.path.join(root, n))]
+    if not files:
+        print(f"sous lint: no CLAUDE.md or AGENTS.md in {root}")
+        return 0
+    res = lint_prose(root, overlay(settings, local), files)
+    print(f"sous lint {root}: {res['covered']} enforced, {len(res['uncovered'])} not enforced, "
+          f"{res['unmapped']} prohibition(s) with no command or path in backticks (can't be checked)")
+    for name, n, kind, span, rules in res["uncovered"]:
+        print(f"  {name}:{n}  never `{span}` ({kind}) has no rule; would add {', '.join(rules)}")
+    if not fix or not res["uncovered"]:
+        if res["uncovered"]:
+            print("  --fix adds these to permissions.deny (additive; `sous uninstall` removes them)")
+        return 0
+    new = [r for *_, rules in res["uncovered"] for r in rules]
+    before, notes, ops = copy.deepcopy(settings), [], []
+    merge(settings, {"permissions": {"deny": new}}, notes, ops=ops)
+    for note in notes:
+        print("  " + note)
+    if dry_run:
+        return 0
+    if lenient:
+        return refuse_jsonc_rewrite(settings_path)
+    created = not os.path.exists(settings_path)
+    os.makedirs(claude, exist_ok=True)
+    write_json_atomic(settings_path, settings)
+    update_manifest(claude, ops, {}, [], created and settings != before)
+    print(f"  wrote {len(new)} deny rule(s) to .claude/settings.json; review them with `git diff`")
+    return 0
+
+
 # ---------------------------------------------------------------------- doctor
 class Report:
     def __init__(self):
@@ -883,12 +1118,40 @@ def doctor(root, ios, strict, mode):
         r.bad(f"{n} is {lines} lines, over the {MEMORY_LINE_BUDGET}-line budget (SOUS_MEMORY_LINES)") \
             if lines > MEMORY_LINE_BUDGET else r.ok(f"{n} {lines}/{MEMORY_LINE_BUDGET} lines")
 
+    prose = lint_prose(root, eff, found)
+    if prose["unmapped"] or prose["uncovered"]:
+        r.info(f"{len(prose['uncovered'])} written prohibition(s) no rule enforces, {prose['unmapped']} with no "
+               "command or path to check: `sous lint` lists them, `sous lint --fix` adds deny rules")
+    elif prose["covered"]:
+        r.ok(f"{prose['covered']} written prohibition(s) in memory files, each enforced by a rule")
+
     print("Layer 2 tools")
-    r.info(".mcp.json present" if os.path.isfile(os.path.join(root, ".mcp.json")) else "no project .mcp.json")
+    servers = mcp_servers(root)
+    r.info(f".mcp.json: {len(servers)} server(s): {', '.join(sorted(servers))}" if servers
+           else "no project .mcp.json servers")
+    for line in unpinned_mcp(servers):
+        r.info(f"unpinned MCP server: {line}")
+    tools_now = tools_fingerprint(root, [] if ci else [user or {}, s, local])
+    rec = _dict(_dict(read_json_quiet(PROBES_FILE).get("projects")).get(root))
+    if ci:
+        r.skip("tool-set record (kept in your ~/.claude, not the CI runner's)")
+    elif rec.get("tools") == tools_now:
+        r.ok(f"MCP servers and plugins unchanged since {rec.get('recorded', '?')}")
+    elif rec.get("tools"):
+        msg = (f"MCP servers or enabled plugins changed since {rec.get('recorded', '?')}: review them, "
+               f"then `sous probe --record {root}`")
+        r.bad("strict: " + msg) if strict else r.info(msg)
+    else:
+        r.info(f"no tool-set baseline: `sous probe --record {root}` records the MCP servers and plugins as is")
 
     print("Layer 3 permissions + sandbox")
     lacks = missing(REQUIRED_DENY, perm.get("deny"))
     r.bad("deny lacks " + ", ".join(lacks)) if lacks else r.ok("deny rules")
+    # The agent can't switch the harness off: its own settings, hooks and tool set
+    # are deny-listed against Edit, Write and Bash redirects in every permission mode.
+    lacks = missing(REQUIRED_TAMPER_DENY, perm.get("deny"))
+    r.bad("deny lacks " + ", ".join(lacks) + " (the agent could rewrite its own harness; `sous upgrade` adds them)") \
+        if lacks else r.ok("harness files deny-listed against agent edits")
     if sb.get("enabled") is True:
         r.ok("sandbox enabled")
     else:
@@ -1225,9 +1488,10 @@ OPTIONS = {
     "check": set(),
     "probe": {"--record"},
     "report": {"--days="},
+    "lint": {"--fix", "--dry-run"},
     "marketplace-check": {"--offline", "--timeout="},
 }
-NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check"}
+NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint"}
 
 
 def usage(msg):
@@ -1270,6 +1534,8 @@ def main(argv):
         return doctor(root, ios, strict, cmd)
     if cmd == "check":
         return check(root)
+    if cmd == "lint":
+        return lint(root, bool(opts.get("--fix")), bool(opts.get("--dry-run")))
     if cmd == "probe":
         if opts.get("--record"):
             if not os.path.isdir(root):

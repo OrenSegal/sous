@@ -24,7 +24,7 @@ already reads:
 | Layer | What holds it | sous adds |
 |---|---|---|
 | 1 Memory | `CLAUDE.md` / `AGENTS.md` | presence and size check |
-| 2 Tools | `.mcp.json`, plugins | reported |
+| 2 Tools | `.mcp.json`, plugins | servers listed, unpinned ones named, the set fingerprinted so a change shows |
 | 3 Permissions + sandbox | `.claude/settings.json` `permissions` + `sandbox` | deny `.env` read/edit, recursive force delete, force push; OS sandbox on with a network allowlist |
 | 4 Hooks | `PreToolUse` | `sous-guard.sh`: hard stops for the spellings deny rules miss (`/bin/rm -rf`, `sh -c`, `git -C . push -f`, `cat .env`) |
 | 5 Human gates | `permissions.ask`, user settings | push / commit / PR / unsandboxed retry ask first; bypass mode disabled |
@@ -32,7 +32,8 @@ already reads:
 It also ships the [`test-audit`](skills/test-audit/SKILL.md) skill, which gates
 new tests on the behavior they prove and makes deletions show evidence, and
 [`tests-ran`](bin/tests-ran), which exits 1 when a test log shows zero executed
-tests. `xcodebuild` reports success when a filter matches nothing, and pytest,
+tests, and [`tests-weakened`](bin/tests-weakened), which reads a diff and flags
+the edit that made the tests pass by deleting, skipping or loosening them. `xcodebuild` reports success when a filter matches nothing, and pytest,
 Vitest and Jest stay green when every test is skipped; `tests-ran --help` lists
 the formats it reads. It reports the largest count it finds, not a sum, so it
 is a zero-detector, not a coverage number.
@@ -57,6 +58,38 @@ $ git status && ls src
 ```
 
 Runs on macOS and Linux (bash and Python 3); on Windows use WSL.
+
+## What sous claims
+
+Three claims, each one checked by something you can run:
+
+1. **Every guard rule has a block fixture and an allow fixture.**
+   `tests/rules.test.sh` pairs each rule with a command it must stop and a
+   near-miss it must let through, and fails if a block message in
+   `hooks/sous-guard.sh` has no pair. A rule that can't be shown blocking and
+   allowing doesn't ship. The wider red-team corpus lives in
+   `tests/adversarial.test.sh`.
+2. **Every written prohibition maps to a control, or lint names it.**
+   `sous lint` reads the "never" and "do not" lines in `CLAUDE.md` and
+   `AGENTS.md`, takes the command or path in backticks, and asks the real guard
+   and your deny rules whether it is enforced. It lists the rest, and the
+   prohibitions with nothing checkable in them. `sous lint --fix` adds the
+   missing deny rules through the manifest, so `uninstall` reverses them;
+   `--dry-run` shows them first. Fenced code blocks are skipped, and `sous
+   doctor` reports the same counts. Research on agent instruction files finds
+   few security rules in prose map to a real control; this is the check for that.
+3. **The agent can't switch the harness off.** `install` deny-lists `Edit` on
+   `.claude/settings.json`, `.claude/settings.local.json`, `.claude/hooks/**`
+   and `.mcp.json`. Deny rules hold in every permission mode, and the existing
+   bypass-mode check covers the mode that skips `ask`. `sous doctor` fails when
+   one is missing. Known gap: an interpreter writing the file
+   (`python -c "open('.claude/settings.json','w')..."`) is not a text match, so
+   the OS sandbox's write scope is the boundary there.
+
+A change to the tool set shows too: `sous probe --record` fingerprints the
+`.mcp.json` servers (names and shape, never env or header values) and the
+enabled plugins with their versions. `sous doctor` notes drift, and `--strict`
+fails on it until you review the change and record again.
 
 ## Install
 
