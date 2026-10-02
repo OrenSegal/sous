@@ -12,16 +12,6 @@
       "version": "0.3.0"
     },
     {
-      "name": "litmus",
-      "source": {
-        "source": "github",
-        "repo": "OrenSegal/litmus",
-        "ref": "v0.2.0",
-        "sha": "c2271a0da1a396d9dd3c9c631f12021bef9a4d5e"
-      },
-      "description": "Red/green CI for skills and prompts. A green only counts if it could have failed."
-    },
-    {
       "name": "cited",
       "source": {
         "source": "github",
