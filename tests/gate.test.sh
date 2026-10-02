@@ -48,7 +48,7 @@ gate() { # output also lands in $WORK/last.txt for seen()
 }
 g() { git -C "$R" "$@" >/dev/null 2>&1; }
 logpath() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/sous-test.log"; }
-green() { printf '============ 3 passed in 0.12s ============\n' >"$(logpath "${1:-$R}")"; }
+green() { printf '============ 3 passed in 0.12s ============\n' >"$(logpath "$R")"; }
 
 # One template, built once and copied per case (cp -p keeps mtimes).
 T="$WORK/tpl"; mkdir -p "$T"
