@@ -447,8 +447,11 @@ text = open(r + "/README.md").read()
 table = text.split("\n## The toolkit\n", 1)[1].split("\n## ", 1)[0]
 rows = {re.match(r"\| \[([\w-]+)\]", ln).group(1): ln for ln in table.splitlines() if re.match(r"\| \[", ln)}
 assert sorted(rows) == sorted(p["name"] for p in m["plugins"]), sorted(rows)
+src = {p["name"]: p["source"] for p in m["plugins"]}
 for name, row in rows.items():
-    assert f"(https://github.com/OrenSegal/{name})" in row, row
+    # a mod that lives in this repo links to its folder; the rest link to their own repo
+    home = f"(mods/{name})" if src[name] == f"./mods/{name}" else f"(https://github.com/OrenSegal/{name})"
+    assert home in row, row
     assert f"`claude plugin install {name}@{mk}`" in row, row' "$REPO"
 # Every suite runs in CI (bash and macOS bash 3.2) and is listed for contributors.
 expect "every tests/*.test.sh is in ci.yml twice and in CONTRIBUTING.md" 0 python3 -c '
