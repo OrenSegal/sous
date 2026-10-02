@@ -90,6 +90,12 @@ sous ships the same check as a script, for CI and for wrappers:
 
 It reads the five formats above and counts skipped tests as not executed.
 
+To check a diff for the other way tests go quiet, deletion, skips and fewer assertions:
+
+```bash
+~/.sous/bin/tests-weakened origin/main   # exit 1 lists each finding
+```
+
 ## Output
 
 ```

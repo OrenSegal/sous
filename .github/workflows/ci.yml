@@ -18,7 +18,7 @@ jobs:
         run: shellcheck -S warning hooks/*.sh bin/tests-ran bin/tests-weakened docs/demo.sh tests/*.sh
       - name: ruff
         if: runner.os == 'Linux'
-        run: pipx run ruff check bin/sous
+        run: pipx run ruff check bin/sous lib
       - name: guard table
         run: bash tests/sous-guard.test.sh
       - name: red-team corpus
@@ -43,7 +43,7 @@ jobs:
         if: runner.os == 'macOS'
         run: /bin/bash tests/gate.test.sh && /bin/bash tests/fleet.test.sh
       - name: python syntax
-        run: python3 -m py_compile bin/sous
+        run: python3 -m py_compile bin/sous lib/*.py
       - name: validate plugin
         if: runner.os == 'Linux'
         run: |

@@ -37,15 +37,32 @@ SOUS_GUARD_VERSION=0.3.0
 # rules get tuned from what fired, not from memory; the directory
 # ($CLAUDE_PROJECT_DIR, else the hook's cwd) lets `sous gate` and `sous fleet`
 # tell worktrees apart.
+# Two things ride on that log without adding any text to it:
+#   - the third identical reason within two minutes adds a "stop retrying" line
+#     to what the agent sees (the log keeps the plain reason), so an agent
+#     looping on a block is told to ask the user instead;
+#   - an allowed command appends one byte to $SOUS_LOG.allowed.YYYYMMDD, so
+#     `sous report` can say how often the guard fires (a block rate).
 sous_guard() {
-  local reason
-  reason=$(_sous_match "$1") && return 0
-  printf '%s\n' "$reason"
-  local log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}" where="${CLAUDE_PROJECT_DIR:-$PWD}"
-  if [[ $log != off ]]; then
-    where=${where//$'\t'/ }; where=${where//$'\n'/ }
-    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\n' "$(date +%s)" "$reason" "$where" >>"$log"; } 2>/dev/null
+  local reason shown log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}" where="${CLAUDE_PROJECT_DIR:-$PWD}"
+  if reason=$(_sous_match "$1"); then
+    [[ $log != off ]] && { printf . >>"$log.allowed.$(date +%Y%m%d)"; } 2>/dev/null
+    return 0
   fi
+  shown="$reason"
+  if [[ $log != off ]]; then
+    local now repeats=0 ts r
+    now=$(date +%s)
+    if [[ -r $log ]]; then
+      while IFS=$'\t' read -r ts r _; do
+        [[ $ts =~ ^[0-9]+$ && $r == "$reason" && $((now - ts)) -le 120 ]] && repeats=$((repeats + 1))
+      done < <(tail -n 8 "$log" 2>/dev/null)
+    fi
+    [[ $repeats -ge 2 ]] && shown="$reason Blocked $((repeats + 1)) times in a row. Stop retrying this; ask the user how they want to proceed."
+    where=${where//$'\t'/ }; where=${where//$'\n'/ }
+    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\n' "$now" "$reason" "$where" >>"$log"; } 2>/dev/null
+  fi
+  printf '%s\n' "$shown"
   return 1
 }
 

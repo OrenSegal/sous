@@ -12,7 +12,7 @@ case "$HOOK" in /*) ;; *) HOOK="$PWD/$HOOK" ;; esac
 # PreToolUse script (other git guards) can't change the exit codes below.
 SANDBOX_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sous-test.XXXXXX") || exit 1  # macOS bare mktemp ignores TMPDIR
 export SOUS_LOG="$SANDBOX_DIR/blocks.tsv"   # never write the real block log from tests
-trap 'rm -f "$SOUS_LOG"; rmdir "$SANDBOX_DIR"' EXIT
+trap 'rm -f "$SOUS_LOG" "$SOUS_LOG".allowed.*; rmdir "$SANDBOX_DIR"' EXIT
 pass=0
 fail=0
 
