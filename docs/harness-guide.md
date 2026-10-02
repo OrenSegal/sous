@@ -87,8 +87,9 @@ That list is the trust model. A mod that can deny or rewrite tool calls and
 read your prompts is a hook with a UI, running in your session, so it deserves
 the same review as a hook. It is also why a harness checker should treat mods
 as first-class: a `tool.call` hook in a mod can do what `sous-guard.sh` does,
-or quietly undo it. sous does not yet inspect mod modules; that is gap 3
-below.
+or quietly undo it. `sous accept` hashes a mod's files under `hooks/`, so an
+edited module shows as drift, but sous does not read which events it hooks;
+that is gap 3 below.
 
 **Install policy for mods and plugins:**
 
@@ -96,7 +97,7 @@ below.
 2. Prefer ones that do one narrow thing and declare what they touch.
 3. Pin to a version or sha. A floating ref means the next update is untested
    code in your session.
-4. Record the set afterwards (`sous probe --record`) so a later change shows.
+4. Record the set afterwards (`sous accept`) so a later change shows.
 
 **Mods worth creating** (each is a gap the research points at, not an
 existing product):
@@ -126,7 +127,7 @@ each group whether you would notice it missing.
 
 | Group | Examples in this set | What to ask |
 |---|---|---|
-| Checking the agent | sous (guard, doctor, `test-audit`), litmus (evals that could never fail), cited (sources that do not say what is claimed), scoped (concurrent sessions editing the same files) | These are the harness. Keep, and run their doctors in CI |
+| Checking the agent | sous (guard, doctor, `test-audit`), cited (sources that do not say what is claimed), scoped (concurrent sessions editing the same files) | These are the harness. Keep, and run their doctors in CI |
 | Engineering method | mattpocock-skills (`tdd`, `diagnosing-bugs`, `code-review`, `to-spec`, `to-tickets`, `implement`, `handoff` and others), `commit`, `interview` | Many overlap. Pick one path for spec to tickets to implement and disable the rest |
 | Research and content | last30days, makerskills (`deep-research`, `ingest`, `second-brain`, `slide-deck` and others), `podcast` | Useful on demand, costly always-on. Good candidates to enable per project |
 | Design | impeccable, `app-icon-generator`, dataviz | Keep for UI work, off elsewhere |
@@ -157,9 +158,10 @@ report, because today you can only see it by running out of room.
 
 Checked against the repo, not from memory:
 
-- **Tool-set drift.** `sous probe --record` fingerprints `.mcp.json` servers
-  (names and shape, never env or header values) and the enabled plugins with
-  their versions. `sous doctor` notes drift; `--strict` fails on it.
+- **Tool-set drift.** `sous accept` (or a first `sous probe --record`)
+  fingerprints `.mcp.json` servers (names and shape, never env or header
+  values) and each enabled plugin's surface: hook commands, files under
+  `hooks/` and `bin/`, and the `allowed-tools` it asks for. `sous doctor` notes drift; `--strict` fails on it.
 - **Hidden instructions.** `sous lint` and `sous doctor` scan memory files,
   skills, commands, agents and `.mcp.json` for invisible characters and for
   lines that tell the agent to drop its instructions, hide something from the
@@ -203,10 +205,11 @@ needs a runtime check and is a separate, harder piece.
 
 ### 3. Fingerprint the behavior, not just the version
 
-**Problem.** Today plugins are recorded by name and version. A plugin that adds
-a hook or a permission ask in a patch release has the same name.
+**Problem.** A plugin that adds a hook or a permission ask in a patch release
+has the same name and can keep the same version.
 **Shape.** Include each enabled plugin's hook commands and the permissions it
-requests in the fingerprint, so a new hook shows as drift.
+requests in the fingerprint, so a new hook shows as drift. Partly built:
+`sous accept` records these; the part below on mod events is not.
 
 Mods raise the stakes here. Fingerprinting should read each enabled mod's
 `hooks/hooks.json` and note which events its module hooks (`tool.call`,

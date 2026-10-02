@@ -53,9 +53,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           npm install -g @anthropic-ai/claude-code >/dev/null
-          for t in . .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents skills; do
+          for t in . .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents skills mods/handoff; do
             claude plugin validate "$t" --strict
           done
+          claude plugin test mods/handoff
 
   marketplace:
     runs-on: ubuntu-latest

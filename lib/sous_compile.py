@@ -2,6 +2,7 @@
 Pure functions over a list of rule strings and a project root, no sous imports."""
 import os
 import re
+import shutil
 import tempfile
 
 # Other agents (Codex, Cursor, Copilot) don't read settings.json. The deny rules
@@ -52,12 +53,42 @@ def compile_text(deny):
     return "\n".join(out)
 
 
+class MarkerError(Exception):
+    """The target's sous markers are not one begin/end pair (or a file sous owns
+    lacks them), so sous can't tell its block from the user's text."""
+
+
 def write_text_atomic(path, text):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".sous-", suffix=".tmp", dir=os.path.dirname(path) or ".")
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    """Temp file and rename, as bin/sous's write_json_atomic: a symlinked file
+    (AGENTS.md -> CLAUDE.md) is written through, and an existing file keeps its mode."""
+    path = os.path.realpath(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".sous-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        if os.path.exists(path):
+            shutil.copymode(path, tmp)
+        else:
+            mask = os.umask(0)
+            os.umask(mask)
+            os.chmod(tmp, 0o666 & ~mask)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def check_markers(rel, text):
+    """Raise MarkerError unless text has no sous block or exactly one, begin before end."""
+    b, e = text.count(COMPILE_BEGIN), text.count(COMPILE_END)
+    if (b, e) == (0, 0) or ((b, e) == (1, 1) and text.index(COMPILE_BEGIN) < text.index(COMPILE_END)):
+        return
+    raise MarkerError(f"{rel} has {b} sous:begin and {e} sous:end marker(s), not one pair; "
+                      "fix them by hand so sous can't take your text for its block, then rerun")
 
 
 def block_re():
@@ -78,6 +109,9 @@ def write(root, target, body, n_rules):
     rel, owned = COMPILE_TARGETS[target]
     path = os.path.join(root, rel)
     existing = open(path).read() if os.path.isfile(path) else ""
+    if owned and existing and COMPILE_BEGIN not in existing:
+        raise MarkerError(f"{rel} exists and has no sous marker, so sous didn't write it; move it aside, then rerun")
+    check_markers(rel, existing)
     if owned or not existing:
         new = body
     elif block_re().search(existing):
@@ -97,6 +131,7 @@ def remove(root, target):
     if not os.path.isfile(path):
         return f"sous compile: nothing at {rel}"
     text = open(path).read()
+    check_markers(rel, text)
     if owned and COMPILE_BEGIN in text:
         os.remove(path)
         return f"removed {rel}"

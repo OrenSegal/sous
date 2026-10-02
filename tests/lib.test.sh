@@ -12,6 +12,7 @@ import tempfile
 import time
 
 import sous_blocks
+import sous_compile
 import sous_lint
 
 passed = failed = 0
@@ -64,6 +65,22 @@ expect("rule_covers command miss", False, sous_lint.rule_covers("Bash(git push:*
 expect("rule_covers read vs edit", False, sous_lint.rule_covers("Read(.env)", "path", ".env", tool="Edit"))
 expect("rule_covers path glob", True, sous_lint.rule_covers("Read(**/.env)", "path", "app/.env", tool="Read"))
 expect("rule_covers negation ignored", False, sous_lint.rule_covers("!Bash(rm:*)", "command", "rm"))
+
+
+def markers_ok(text):
+    try:
+        sous_compile.check_markers("F", text)
+        return True
+    except sous_compile.MarkerError:
+        return False
+
+
+B, E = sous_compile.COMPILE_BEGIN, sous_compile.COMPILE_END
+expect("check_markers: none", True, markers_ok("# notes\n"))
+expect("check_markers: one pair", True, markers_ok(f"x\n{B}\ny\n{E}\nz\n"))
+expect("check_markers: begin only", False, markers_ok(f"x\n{B}\nmine\n"))
+expect("check_markers: end before begin", False, markers_ok(f"{E}\n{B}\n"))
+expect("check_markers: two pairs", False, markers_ok(f"{B}\n{E}\n{B}\n{E}\n"))
 
 print(f"lib: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

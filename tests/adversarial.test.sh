@@ -414,6 +414,16 @@ case "$m3" in *"Stop retrying"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); ec
 case "$m3" in "BLOCKED (sous): "*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: message lost its prefix" >&2 ;; esac
 m4=$(guard_msg 'rm -rf build')
 case "$m4" in *"Stop retrying"*) fail=$((fail + 1)); echo "FAIL loop breaker: a different reason was escalated" >&2 ;; *) pass=$((pass + 1)) ;; esac
+# The log is shared by every session. Three worktrees hitting the same rule once
+# each are not one agent looping, so only blocks from the same project dir count.
+: >"$SOUS_LOG"
+CLAUDE_PROJECT_DIR=/wt/one guard_msg 'cat .env' >/dev/null
+CLAUDE_PROJECT_DIR=/wt/two guard_msg 'cat .env' >/dev/null
+m5=$(CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env')
+case "$m5" in *"Stop retrying"*) fail=$((fail + 1)); echo "FAIL loop breaker: escalated on blocks from other projects" >&2 ;; *) pass=$((pass + 1)) ;; esac
+CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env' >/dev/null
+m6=$(CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env')
+case "$m6" in *"Stop retrying"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: silent on the 3rd block in one project: $m6" >&2 ;; esac
 
 # --- Block rate: an allowed command leaves one byte in a per-day counter, never
 # its text, so `sous report` can say how often the guard fires.
@@ -424,6 +434,14 @@ n=$(cat "$SOUS_LOG".allowed.* 2>/dev/null | wc -c | tr -d ' ')
 if [ "$n" -ge 2 ] && ! grep -rq canary "$SOUS_LOG".allowed.* 2>/dev/null; then pass=$((pass + 1)); else
   fail=$((fail + 1)); printf 'FAIL allow counter: want >=2 bytes without command text, got %s\n' "$n" >&2
 fi
+# Before the first block the log's directory may not exist yet; allowed commands still count.
+fresh="$SANDBOX_DIR/fresh"
+printf '{"tool_input":{"command":"ls"}}' | SOUS_LOG="$fresh/blocks.tsv" bash "$HOOK" >/dev/null 2>&1
+n=$(cat "$fresh"/blocks.tsv.allowed.* 2>/dev/null | wc -c | tr -d ' ')
+if [ "$n" = 1 ]; then pass=$((pass + 1)); else
+  fail=$((fail + 1)); printf 'FAIL allow counter: not counted before the log dir existed (got %s bytes)\n' "$n" >&2
+fi
+rm -f "$fresh"/blocks.tsv.allowed.*; [ -d "$fresh" ] && rmdir "$fresh"
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
