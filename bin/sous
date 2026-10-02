@@ -1064,6 +1064,9 @@ def marketplace_shape(repo):
             if not isinstance(ref, str) or not ref:
                 problems.append(f"{name}: no ref to check the sha against")
                 continue
+            tag = re.fullmatch(r"v?(\d+\.\d+\.\d+)", ref)
+            if tag and p.get("version") not in (None, tag.group(1)):
+                problems.append(f"{name}: marketplace says version {p['version']}, pinned to {ref}")
             remotes.append((name, url, ref, sha))
         else:
             problems.append(f"{name}: source is missing")
