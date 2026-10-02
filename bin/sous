@@ -56,7 +56,6 @@ not reach the network (nothing was disproved).
 import collections
 import copy
 import filecmp
-import fnmatch
 import glob
 import hashlib
 import json
@@ -71,7 +70,9 @@ import time
 
 SOUS_LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib")
 sys.path.insert(0, SOUS_LIB)
+import sous_blocks  # noqa: E402
 import sous_compile  # noqa: E402
+import sous_lint  # noqa: E402
 import sous_scan  # noqa: E402
 
 SOUS_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -82,7 +83,7 @@ HOOK_SRC = os.path.join(SOUS_ROOT, "hooks", "sous-guard.sh")
 # guard slower than this taxes every Bash call. Override per project via env.
 MEMORY_LINE_BUDGET = int(os.environ.get("SOUS_MEMORY_LINES", "400"))
 GUARD_MS_BUDGET = int(os.environ.get("SOUS_GUARD_MS", "500"))
-BLOCK_LOG = os.environ.get("SOUS_LOG") or os.path.expanduser("~/.claude/sous/blocks.tsv")
+BLOCK_LOG = os.environ.get("SOUS_LOG") or sous_blocks.DEFAULT_LOG
 HOOK_TESTS = [os.path.join(SOUS_ROOT, "tests", n) for n in ("sous-guard.test.sh", "adversarial.test.sh")]
 SKILLS_SRC = os.path.join(SOUS_ROOT, "skills")
 USER_SETTINGS = os.path.expanduser("~/.claude/settings.json")
@@ -1120,51 +1121,7 @@ def marketplace_check(repo, offline, timeout):
 # Only about 1 in 20 written security rules has a control behind it (arXiv 2608.23550),
 # so lint reads the prohibitions and asks, for each one that names a command or a
 # path in backticks, whether anything enforces it. It judges the real guard, not a copy of its table.
-PROHIBIT = re.compile(r"\b(never|must not|mustn't|do not|don't|forbidden|prohibited|not allowed to)\b", re.I)
-# A comma ends the clause unless a list goes on (`a`, `b` or `c`): in "don't use
-# `pip`, use `uv`" the second span is the advice, not the prohibition.
-CLAUSE_END = re.compile(r";|\.\s|\s(?:\u2014|--)\s|\b(?:instead|unless|except|but)\b|,(?!\s*(?:`|or\b|and\b|nor\b))",
-                        re.I)
-SPAN = re.compile(r"`([^`\n]+)`")
-READS = re.compile(r"\b(read|reads|reading|open|view|cat|print|show|expose|leak)\b", re.I)
-# "Never skip `make lint`", "never commit without `make test`": the command is the
-# one that must run, so denying it would forbid the opposite of what was written.
-MUST_RUN = re.compile(r"\b(skip|skipping|omit|bypass|forget|ignore|disable|without)\b", re.I)
-LIST_GLUE = re.compile(r"[\s,]*(?:(?:or|and|nor)\s*)?", re.I)
-
-
-def _span_kind(span):
-    """'path', 'command' or None for a backticked span in a prohibition."""
-    span = span.strip()
-    if not span or "://" in span or re.search(r"[<>$|&;(){}*?\\]", span):
-        return None
-    toks = span.split()
-    first = os.path.basename(toks[0]) if toks[0] != "sudo" or len(toks) < 2 else os.path.basename(toks[1])
-    if len(toks) == 1 and (span.startswith((".", "~", "/")) or "/" in span or re.search(r"\.\w{1,6}$", span)):
-        return "path"
-    if re.fullmatch(r"[a-z][\w.+-]*", first) and shutil.which(first):
-        return "command"
-    return None
-
-
-def rule_covers(rule, kind, span, tool=None):
-    """Whether one permission rule (allow/ask/deny syntax) covers span. For a
-    path, tool ("Read" or "Edit") narrows it: a Read rule doesn't stop an edit."""
-    if not isinstance(rule, str) or rule.startswith("!"):
-        return False
-    m = re.match(r"^(Bash|Read|Edit)\((.*)\)$", rule.strip())
-    if not m or (kind == "command") != (m.group(1) == "Bash") or (tool and m.group(1) != tool):
-        return False
-    tool, inner = m.groups()
-    if tool == "Bash":
-        if inner.endswith(":*"):
-            return span == inner[:-2] or span.startswith(inner[:-2] + " ")
-        return fnmatch.fnmatchcase(span, inner) or span == inner
-    path = re.sub(r"^\./", "", span).rstrip("/")
-    pat = re.sub(r"^\.?/", "", inner).replace("**", "*").rstrip("/")
-    return any(fnmatch.fnmatchcase(c, g) for c in (path, os.path.basename(path)) for g in (pat, pat + "/*"))
-
-
+# The pure parsing and rule matching is lib/sous_lint.py; this section is the glue.
 def guard_blocks(guard, bash, command):
     """Whether the guard stops command: exit 2 from the hook."""
     payload = json.dumps({"tool_input": {"command": command}})
@@ -1199,20 +1156,20 @@ def lint_prose(root, settings, files):
                 continue
             pos = 0
             while not fenced:  # every prohibition on the line: "never X; never Y" is two
-                m = PROHIBIT.search(line, pos)
+                m = sous_lint.PROHIBIT.search(line, pos)
                 if not m:
                     break
-                end = CLAUSE_END.search(line, m.end())
+                end = sous_lint.CLAUSE_END.search(line, m.end())
                 clause = line[m.start():end.start() if end else len(line)]
                 pos = end.end() if end else len(line)
                 targets, prev, reads, must_run = [], 0, False, False
-                for sm in SPAN.finditer(clause):
+                for sm in sous_lint.SPAN.finditer(clause):
                     # the verb just before a span decides what is forbidden; a list
                     # ("read `a` or `b`") carries the verb on to the next span
                     lead = clause[prev:sm.start()]
-                    if prev == 0 or not LIST_GLUE.fullmatch(lead):
-                        reads, must_run = bool(READS.search(lead)), bool(MUST_RUN.search(lead))
-                    kind = _span_kind(sm.group(1))
+                    if prev == 0 or not sous_lint.LIST_GLUE.fullmatch(lead):
+                        reads, must_run = bool(sous_lint.READS.search(lead)), bool(sous_lint.MUST_RUN.search(lead))
+                    kind = sous_lint.span_kind(sm.group(1))
                     if kind and not (kind == "command" and must_run):
                         targets.append((kind, sm.group(1).strip(), reads))
                     prev = sm.end()
@@ -1224,14 +1181,14 @@ def lint_prose(root, settings, files):
                         continue
                     seen.add((kind, span, reads))
                     if kind == "command":
-                        rules = [] if (any(rule_covers(r, kind, span) for r in held)
+                        rules = [] if (any(sous_lint.rule_covers(r, kind, span) for r in held)
                                        or (bash and guard_blocks(guard, bash, span))) else [f"Bash({span}:*)"]
                     else:
                         path = re.sub(r"^\./", "", span)
                         pat = path + "**" if path.endswith("/") else path
-                        edit_ok = any(rule_covers(r, kind, span, "Edit") for r in held)
-                        read_ok = (not reads or any(rule_covers(r, kind, span, "Read") for r in held)
-                                   or any(rule_covers(f"Read({h})", kind, span) for h in held_paths))
+                        edit_ok = any(sous_lint.rule_covers(r, kind, span, "Edit") for r in held)
+                        read_ok = (not reads or any(sous_lint.rule_covers(r, kind, span, "Read") for r in held)
+                                   or any(sous_lint.rule_covers(f"Read({h})", kind, span) for h in held_paths))
                         if not (edit_ok and read_ok) and bash and guard_blocks(guard, bash, "cat " + span):
                             edit_ok = read_ok = True  # the guard stops any Bash call naming it
                         rules = ([] if edit_ok else [f"Edit({pat})"]) + ([] if read_ok else [f"Read({pat})"])
@@ -1590,11 +1547,12 @@ def doctor(root, ios, strict, mode):
         r.info("spend has no settings key: cap an unattended run with `claude -p --max-budget-usd N`")
 
     print("Feedback loop")
-    rows = read_blocks(30)
+    rows = sous_blocks.reasons(BLOCK_LOG, 30)
     if rows:
         top, n = collections.Counter(rows).most_common(1)[0]
-        allowed = count_allowed(30)
-        rate = f" ({100 * len(rows) / (len(rows) + allowed):.1f}% of {len(rows) + allowed} commands)" if allowed else ""
+        allowed = sous_blocks.count_allowed(BLOCK_LOG, 30)
+        rate = (f" ({sous_blocks.percent_blocked(len(rows), allowed):.1f}% of {len(rows) + allowed} commands)"
+                if allowed else "")
         r.info(f"{len(rows)} blocks in 30 days{rate}, most often: {top} ({n}x); `sous report` to tune")
     else:
         r.info("no blocks logged in 30 days")
@@ -1705,64 +1663,6 @@ def guard_latency_ms(hook, bash="bash"):
             ms = int((time.monotonic() - t) * 1000)
             best = ms if best is None else min(best, ms)
     return best
-
-
-def block_rows():
-    """(epoch, reason, project dir or None) per guard block. Rows from a guard
-    before the third column have no directory."""
-    if BLOCK_LOG == "off" or not os.path.isfile(BLOCK_LOG):
-        return []
-    out = []
-    with open(BLOCK_LOG, errors="replace") as f:
-        for line in f:
-            cols = line.rstrip("\n").split("\t")
-            if len(cols) >= 2 and cols[0].isdigit() and cols[1]:
-                out.append((int(cols[0]), cols[1], cols[2] if len(cols) > 2 and cols[2] else None))
-    return out
-
-
-def short_reason(reason):
-    return reason.replace("BLOCKED (sous): ", "").split(".")[0]
-
-
-def read_blocks(days):
-    cutoff = time.time() - days * 86400
-    return [short_reason(reason) for ts, reason, _ in block_rows() if ts >= cutoff]
-
-
-def count_allowed(days):
-    """Allowed commands the guard saw: one byte per command in blocks.tsv.allowed.YYYYMMDD."""
-    if BLOCK_LOG == "off":
-        return 0
-    cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - days * 86400))
-    total = 0
-    for path in glob.glob(glob.escape(BLOCK_LOG) + ".allowed.*"):
-        day = path.rsplit(".", 1)[-1]
-        if day.isdigit() and day >= cutoff:
-            total += os.path.getsize(path)
-    return total
-
-
-def report(days):
-    rows = read_blocks(days)
-    allowed = count_allowed(days)
-    rate = f", {allowed} allowed ({100 * len(rows) / (len(rows) + allowed):.1f}% blocked)" if allowed else ""
-    print(f"sous report: {len(rows)} blocks{rate} in the last {days} days ({BLOCK_LOG})\n")
-    for reason, n in collections.Counter(rows).most_common():
-        print(f"  {n:5d}  {reason}")
-    print(REPORT_LOOP)
-    return 0
-
-
-REPORT_LOOP = """
-How to act on this (the guard improves only through the corpus):
-  false positive  add the benign command as `check 0` in tests/adversarial.test.sh,
-                  watch it fail, then narrow the rule until it passes
-  bypass seen     add it as `check 2` first (red), then widen the rule (green)
-  rule never      a rule with zero hits for months is a candidate to delete;
-  fires           fewer rules = faster guard, less to trust
-Then upstream the change to sous and rerun `sous install` everywhere it's vendored.
-"""
 
 
 PROBES = """
@@ -2014,8 +1914,8 @@ def gate_blocks(c):
     except (OSError, ValueError):
         acked = 0
     roots = [w["path"] for w in c.worktrees]
-    rows = [(ts, r, p) for ts, r, p in block_rows() if ts >= c.forked_at]
-    mine = [short_reason(r) for ts, r, p in rows if p and ts > acked and owner(p, roots) == c.root]
+    rows = [(ts, r, p) for ts, r, p in sous_blocks.rows(BLOCK_LOG) if ts >= c.forked_at]
+    mine = [sous_blocks.short_reason(r) for ts, r, p in rows if p and ts > acked and owner(p, roots) == c.root]
     pathless = sum(1 for _, _, p in rows if not p)
     if mine:
         top = ", ".join(f"{r} x{n}" for r, n in collections.Counter(mine).most_common(3))
@@ -2245,7 +2145,7 @@ def fleet(cwd, base, as_json):
     if base and not ref:
         return usage(f"base {base} is not a commit")
     roots = [w["path"] for w in rows]
-    blocks = collections.Counter(owner(p, roots) for _, _, p in block_rows() if p)
+    blocks = collections.Counter(owner(p, roots) for _, _, p in sous_blocks.rows(BLOCK_LOG) if p)
     claims, note = scoped_claims()
     held = collections.Counter(owner(k["file_path"], roots) for k in claims or [])
     for w in rows:
@@ -2376,7 +2276,8 @@ def main(argv):
     days = opts.get("--days", "30")
     if not days.isdigit() or int(days) < 1:
         return usage(f"--days wants a positive whole number, got {days!r}")
-    return report(int(days))
+    print(sous_blocks.render_report(BLOCK_LOG, int(days)), end="")
+    return 0
 
 
 if __name__ == "__main__":
