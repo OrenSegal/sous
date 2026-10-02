@@ -26,7 +26,7 @@ guard_v=$(sed -n 's/^SOUS_GUARD_VERSION=//p' "$ROOT/hooks/sous-guard.sh")
 plugin_v=$(jq -r .version "$ROOT/.claude-plugin/plugin.json")
 market_v=$(jq -r '[.plugins[] | select(.name == "sous") | .version // empty][0] // empty' "$ROOT/.claude-plugin/marketplace.json")
 expect "guard stamp equals plugin.json version" "$plugin_v" "$guard_v"
-[[ -n "$market_v" ]] && expect "marketplace sous entry equals plugin.json version" "$plugin_v" "$market_v"
+expect "marketplace sous entry equals plugin.json version" "$plugin_v" "$market_v"
 
 # One default log path, spelled the same way in both languages.
 want=".claude/sous/blocks.tsv"
