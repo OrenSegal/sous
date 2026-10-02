@@ -12,16 +12,6 @@
       "version": "0.3.0"
     },
     {
-      "name": "litmus",
-      "source": {
-        "source": "github",
-        "repo": "OrenSegal/litmus",
-        "ref": "v0.2.0",
-        "sha": "c2271a0da1a396d9dd3c9c631f12021bef9a4d5e"
-      },
-      "description": "Red/green CI for skills and prompts. A green only counts if it could have failed."
-    },
-    {
       "name": "cited",
       "source": {
         "source": "github",
@@ -65,6 +55,12 @@
         "name": "Oren Segal"
       },
       "license": "MIT"
+    },
+    {
+      "name": "handoff",
+      "source": "./mods/handoff",
+      "description": "Mod: after each turn that changes the tree, writes .claude/handoff/LATEST.md and LATEST.patch (secret-looking files excluded) for the next session.",
+      "version": "0.1.0"
     }
   ]
 }

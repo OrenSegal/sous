@@ -7,10 +7,10 @@ sous: tools for checking what coding agents actually do.
 | Plugin | What it checks | Install |
 |---|---|---|
 | [sous](https://github.com/OrenSegal/sous) | Bash calls that delete, force-push or read secrets; green test runs that ran nothing; whether the harness still holds | `claude plugin install sous@sous` |
-| [litmus](https://github.com/OrenSegal/litmus) | Skill and prompt evals that could never have failed | `claude plugin install litmus@sous` |
 | [cited](https://github.com/OrenSegal/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
 | [scoped](https://github.com/OrenSegal/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
 | [deuce](https://github.com/OrenSegal/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
+| [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
 
 Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
 The rest of this page is about sous itself: a Claude Code harness you install
@@ -60,6 +60,10 @@ $ git status && ls src
 
 Runs on macOS and Linux (bash and Python 3); on Windows use WSL.
 
+New to harnesses, or deciding what to install? Read the
+[harness guide](docs/harness-guide.md): what is necessary, how to treat mods and
+plugins, and the gaps still open.
+
 ## What sous claims
 
 Three claims, each one checked by something you can run:
@@ -89,6 +93,28 @@ Three claims, each one checked by something you can run:
    `python -c "open('.claude/settings.json','w')"`. A path held in a variable
    or reached after `cd` is a known gap ([SECURITY.md](SECURITY.md)); the OS
    sandbox's write scope is the boundary there.
+
+Around those claims:
+
+- **Loop breaker.** The third identical block within two minutes adds "Stop
+  retrying this; ask the user" to what the agent sees. It reads the same
+  reason-only log, so no command text is kept.
+- **Block rate.** The guard counts allowed commands as one byte per day in
+  `blocks.tsv.allowed.YYYYMMDD`, never their text, and `sous report` shows
+  "N blocks, M allowed (x% blocked)". It is a block rate, not a false-positive
+  rate: you still judge each reason by hand.
+- **Hidden-instruction scan.** `sous lint` and `sous doctor` flag invisible
+  characters (zero-width, bidi controls, tag characters) and lines that tell the
+  agent to drop its instructions, hide something from the user or send a secret
+  out, in memory files, skills, commands, agents and `.mcp.json`. Patterns are a
+  short list, so a clean scan is not proof. `--strict` fails on a hit.
+- **Spend.** Claude Code has no settings key for a budget, so `doctor --strict`
+  reminds you to cap an unattended run with `claude -p --max-budget-usd N`.
+- **Other agents.** `sous compile --to=agents|cursor|copilot` writes the deny
+  rules as plain instructions (`AGENTS.md`, `.cursor/rules/sous.mdc`,
+  `.github/copilot-instructions.md`), printing by default and writing a marked
+  block with `--write`; `--remove` takes it out. Those agents read it as a
+  request. Only Claude Code enforces the rules.
 
 A change to the tool set shows too. `sous accept DIR` records the `.mcp.json`
 servers (names and shape, never env or header values) and, for each enabled

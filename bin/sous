@@ -33,6 +33,8 @@ Usage:
                                                        --ack-blocks marks this worktree's blocks reviewed
   sous fleet     [DIR] [--base REF] [--json]           every worktree of the repo: branch, dirty,
                                                        ahead/behind, tests ran, blocks, scoped claims
+  sous compile   [DIR] [--to=T] [--write|--remove]     the deny rules as plain instructions for other agents
+                                                       (T: agents, cursor or copilot); prints unless --write
   sous marketplace-check [REPO] [--offline] [--timeout=S]
                                                        verify each pinned plugin ref resolves to its sha
   sous --version
@@ -45,7 +47,8 @@ cannot run inside Claude Code's). It is auto-detected from *.xcodeproj,
 (allowUnsandboxedCommands: false), so a blocked command fails instead of
 retrying outside the sandbox. Only excludedCommands still run unsandboxed.
 Doctor --strict also fails when the host can't run the sandbox or when it was
-never probed live for the current settings.
+never probed live for the current settings. Spend has no settings key: cap an
+unattended run on the command line with `claude -p --max-budget-usd N`.
 
 Exit codes: 0 ok, 1 a check failed, 64 usage error, 75 marketplace-check could
 not reach the network (nothing was disproved).
@@ -65,6 +68,11 @@ import subprocess
 import sys
 import tempfile
 import time
+
+SOUS_LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib")
+sys.path.insert(0, SOUS_LIB)
+import sous_compile  # noqa: E402
+import sous_scan  # noqa: E402
 
 SOUS_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 with open(os.path.join(SOUS_ROOT, ".claude-plugin", "plugin.json")) as _f:
@@ -1244,6 +1252,11 @@ def lint(root, fix, dry_run):
     except SettingsError as e:
         print(f"sous: {e}", file=sys.stderr)
         return 1
+    hits, scanned = sous_scan.scan_injection(root)
+    if hits:
+        print(f"sous lint {root}: {len(hits)} hidden-instruction pattern(s) in {scanned} file(s)")
+        for name, n, why in hits:
+            print(f"  {name}:{n}  {why}")
     files = [n for n in ("CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md") if os.path.isfile(os.path.join(root, n))]
     if not files:
         print(f"sous lint: no CLAUDE.md or AGENTS.md in {root}")
@@ -1272,6 +1285,37 @@ def lint(root, fix, dry_run):
     update_manifest(claude, ops, {}, [], created and settings != before)
     print(f"  wrote {len(new)} deny rule(s) to .claude/settings.json; review them with `git diff`")
     return 0
+
+
+# ------------------------------------------------ injection scan and compile
+# The pure parts live in lib/sous_scan.py and lib/sous_compile.py; this is the glue.
+
+
+def compile_rules(root, target, write, remove):
+    if target not in sous_compile.COMPILE_TARGETS:
+        return usage(f"--to wants one of {', '.join(sorted(sous_compile.COMPILE_TARGETS))}, got {target!r}")
+    if remove:
+        print(sous_compile.remove(root, target))
+        return 0
+    settings_path = os.path.join(root, ".claude", "settings.json")
+    local_path = os.path.join(root, ".claude", "settings.local.json")
+    try:
+        settings = read_json(settings_path)[0] if os.path.isfile(settings_path) else {}
+        local = read_json(local_path)[0] if os.path.isfile(local_path) else {}
+    except SettingsError as e:
+        print(f"sous: {e}", file=sys.stderr)
+        return 1
+    deny = [r for r in _dict(overlay(settings, local).get("permissions")).get("deny", []) if isinstance(r, str)]
+    if not deny:
+        print(f"sous compile: no deny rules in {settings_path}; run `sous install` first", file=sys.stderr)
+        return 1
+    body = sous_compile.render(deny, target)
+    if not write:
+        print(body, end="")
+        return 0
+    print(sous_compile.write(root, target, body, len(deny)))
+    return 0
+
 
 
 # ---------------------------------------------------------------------- doctor
@@ -1344,6 +1388,13 @@ def doctor(root, ios, strict, mode):
                "command or path to check: `sous lint` lists them, `sous lint --fix` adds deny rules")
     elif prose["covered"]:
         r.ok(f"{prose['covered']} written prohibition(s) in memory files, each enforced by a rule")
+
+    hits, scanned = sous_scan.scan_injection(root)
+    if hits:
+        msg = f"{len(hits)} hidden-instruction pattern(s) in memory, skills or .mcp.json: `sous lint` lists them"
+        r.bad("strict: " + msg) if strict else r.info(msg)
+    elif scanned:
+        r.ok(f"no hidden characters or instruction-dropping lines in {scanned} memory/skill/tool file(s)")
 
     print("Layer 2 tools")
     servers = mcp_servers(root)
@@ -1535,11 +1586,16 @@ def doctor(root, ios, strict, mode):
     else:
         r.bad('~/.claude/settings.json lacks permissions.disableBypassPermissionsMode: "disable"')
 
+    if strict:
+        r.info("spend has no settings key: cap an unattended run with `claude -p --max-budget-usd N`")
+
     print("Feedback loop")
     rows = read_blocks(30)
     if rows:
         top, n = collections.Counter(rows).most_common(1)[0]
-        r.info(f"{len(rows)} blocks in 30 days, most often: {top} ({n}x); `sous report` to tune")
+        allowed = count_allowed(30)
+        rate = f" ({100 * len(rows) / (len(rows) + allowed):.1f}% of {len(rows) + allowed} commands)" if allowed else ""
+        r.info(f"{len(rows)} blocks in 30 days{rate}, most often: {top} ({n}x); `sous report` to tune")
     else:
         r.info("no blocks logged in 30 days")
 
@@ -1674,9 +1730,24 @@ def read_blocks(days):
     return [short_reason(reason) for ts, reason, _ in block_rows() if ts >= cutoff]
 
 
+def count_allowed(days):
+    """Allowed commands the guard saw: one byte per command in blocks.tsv.allowed.YYYYMMDD."""
+    if BLOCK_LOG == "off":
+        return 0
+    cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - days * 86400))
+    total = 0
+    for path in glob.glob(glob.escape(BLOCK_LOG) + ".allowed.*"):
+        day = path.rsplit(".", 1)[-1]
+        if day.isdigit() and day >= cutoff:
+            total += os.path.getsize(path)
+    return total
+
+
 def report(days):
     rows = read_blocks(days)
-    print(f"sous report: {len(rows)} blocks in the last {days} days ({BLOCK_LOG})\n")
+    allowed = count_allowed(days)
+    rate = f", {allowed} allowed ({100 * len(rows) / (len(rows) + allowed):.1f}% blocked)" if allowed else ""
+    print(f"sous report: {len(rows)} blocks{rate} in the last {days} days ({BLOCK_LOG})\n")
     for reason, n in collections.Counter(rows).most_common():
         print(f"  {n:5d}  {reason}")
     print(REPORT_LOOP)
@@ -2221,12 +2292,15 @@ OPTIONS = {
     "accept": set(),
     "report": {"--days="},
     "lint": {"--fix", "--dry-run"},
+    "compile": {"--to=", "--write", "--remove"},
     "marketplace-check": {"--offline", "--timeout="},
     "gate": {"--base=", "--json", "--test-log=", "--transcript=", "--ack-blocks"},
     "fleet": {"--base=", "--json"},
 }
-NEEDS_DIR = {"install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint", "gate", "fleet",
-             "accept"}
+NEEDS_DIR = {
+    "install", "upgrade", "uninstall", "doctor", "status", "marketplace-check", "lint", "gate", "fleet", "compile",
+    "accept",
+}
 
 
 def usage(msg):
@@ -2283,6 +2357,10 @@ def main(argv):
         return fleet(root, opts.get("--base"), bool(opts.get("--json")))
     if cmd == "accept":
         return accept(root)
+    if cmd == "compile":
+        if opts.get("--write") and opts.get("--remove"):
+            return usage("--write and --remove are opposites; pass one")
+        return compile_rules(root, opts.get("--to", "agents"), bool(opts.get("--write")), bool(opts.get("--remove")))
     if cmd == "probe":
         if opts.get("--record"):
             if not os.path.isdir(root):

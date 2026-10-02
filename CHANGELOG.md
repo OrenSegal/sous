@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+- litmus is retired from the marketplace and the toolkit table: its deterministic assertions can pass when they could never fail, and `claude plugin eval` covers the rest.
 - New `sous lint [DIR] [--fix] [--dry-run]`: lists written prohibitions in `CLAUDE.md` / `AGENTS.md` that no rule or guard check enforces; `--fix` adds deny rules through the manifest. It reads every prohibition on a line, not the alternative after "use X instead" or "never skip X", and needs an `Edit` rule (not only a `Read` rule) to call "never edit" enforced.
+- New `compile [DIR] [--to=agents|cursor|copilot] [--write|--remove]`: the deny rules as instructions for agents that don't read `settings.json`.
+- `lint` and `doctor` scan memory files, skills, commands, agents and `.mcp.json` for hidden characters and instruction-dropping lines (`--strict` fails on a hit).
+- `report` shows a block rate; the guard counts allowed commands as bytes in `blocks.tsv.allowed.YYYYMMDD`, never their text.
+- Guard: the third identical block within two minutes tells the agent to stop retrying.
 - New `bin/tests-weakened`: flags a diff that deletes, skips or loosens tests (heuristic). It reads a diff on stdin, or diffs from the merge base with a ref, so tests the base gained later don't read as deleted; an unknown ref exits 2.
 - `probe --record` also fingerprints `.mcp.json` servers and enabled plugins; doctor notes drift (`--strict` fails) and names servers run by `npx`, `bunx`, `pnpx`, `uvx` or `pipx` without a version pin, or over plain http.
 - New `sous accept [DIR]`: records each enabled plugin's surface (hook commands, files under `hooks/` and `bin/` or named by a hook, MCP servers, the `allowed-tools` its commands, agents and skills ask for) next to the `.mcp.json` servers. Doctor names each item added, removed or changed since, so a same-version edit to a hook script shows; gate warns (`tools-drift`). Only `accept` moves the record: `probe --record` seeds a first one and otherwise leaves it alone. The guard blocks `sous accept` from Bash, so a session cannot clear its own drift report; the user runs it.

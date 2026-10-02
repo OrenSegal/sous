@@ -1,0 +1,8 @@
+{
+  "name": "handoff",
+  "version": "0.1.0",
+  "description": "After each turn that changes the working tree, writes .claude/handoff/LATEST.md and LATEST.patch so the next session or person can pick up the work.",
+  "author": { "name": "Oren Segal" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
