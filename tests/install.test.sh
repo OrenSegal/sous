@@ -450,6 +450,25 @@ assert sorted(rows) == sorted(p["name"] for p in m["plugins"]), sorted(rows)
 for name, row in rows.items():
     assert f"(https://github.com/OrenSegal/{name})" in row, row
     assert f"`claude plugin install {name}@{mk}`" in row, row' "$REPO"
+# Every suite runs in CI (bash and macOS bash 3.2) and is listed for contributors.
+expect "every tests/*.test.sh is in ci.yml twice and in CONTRIBUTING.md" 0 python3 -c '
+import glob, os, re, sys; r = sys.argv[1]
+ci = open(r + "/.github/workflows/ci.yml").read()
+contrib = open(r + "/CONTRIBUTING.md").read()
+for t in sorted(glob.glob(r + "/tests/*.test.sh")):
+    rel = "tests/" + os.path.basename(t)
+    assert re.search(r"(?<!/bin/)bash " + re.escape(rel), ci), rel + " not run by bash in ci.yml"
+    assert "/bin/bash " + rel in ci, rel + " not run on bash 3.2 in ci.yml"
+    assert "bash " + rel in contrib, rel + " not in CONTRIBUTING.md"' "$REPO"
+# OPTIONS is the command list; --help must name every command and option in it.
+expect "sous --help names every command and option" 0 python3 -c '
+import re, runpy, subprocess, sys; sous = sys.argv[1]
+OPTIONS = runpy.run_path(sous, run_name="sous_cli")["OPTIONS"]
+helptext = subprocess.run([sys.executable, sous, "--help"], capture_output=True, text=True).stdout
+for cmd, opts in OPTIONS.items():
+    assert re.search(r"^  sous " + re.escape(cmd) + r"\b", helptext, re.M), cmd + " missing from --help"
+    for o in opts:
+        assert o.rstrip("=") in helptext, f"{cmd} {o} missing from --help"' "$SOUS"
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
