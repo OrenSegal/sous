@@ -10,7 +10,7 @@ Every behavior change starts as a test that fails:
 - **A new guard rule** gets a row in `tests/rules.test.sh` (a command it blocks, a near-miss it allows); that suite fails if a guard message has no row.
 - **A false positive** gets a `check 0 '<command>'` row the same way.
 - **A known gap** the guard can't close stays a `check 0` row under `KNOWN_GAP`, and SECURITY.md lists it.
-- **A `sous` change** gets a case in `tests/install.test.sh` (`gate.test.sh` / `fleet.test.sh` for those commands) that fails against the old `bin/sous`. A new gate check is one `@gate_check` function in `bin/sous` plus its cases in `tests/gate.test.sh`. New features with no need for sous's settings helpers go in `lib/sous_<name>.py` as pure functions; `bin/sous` keeps only the glue.
+- **A `sous` change** gets a case in `tests/install.test.sh` (`gate.test.sh` / `fleet.test.sh` for those commands) that fails against the old `bin/sous`. A new gate check is one `@gate_check` function in `bin/sous` plus its cases in `tests/gate.test.sh`. New features with no need for sous's settings helpers go in `lib/sous_<name>.py` as pure functions with a case in `tests/lib.test.sh`; `bin/sous` keeps only the glue.
 
 A test that passes before the fix doesn't prove the fix.
 
@@ -23,6 +23,8 @@ bash tests/rules.test.sh          # every guard rule has a block and an allow fi
 bash tests/tests-ran.test.sh
 bash tests/tests-weakened.test.sh
 bash tests/install.test.sh        # about 2 minutes; temp HOME, no network
+bash tests/lib.test.sh            # pure lib/ modules, no HOME
+bash tests/ssot.test.sh           # guard and Python agree: versions, log path, log row shape
 bash tests/gate.test.sh           # throwaway repos and worktrees; temp HOME
 bash tests/fleet.test.sh
 shellcheck -S warning hooks/*.sh bin/tests-ran bin/tests-weakened docs/demo.sh tests/*.sh

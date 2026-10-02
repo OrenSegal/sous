@@ -42,6 +42,11 @@ jobs:
       - name: gate and fleet on bash 3.2 (macOS system bash)
         if: runner.os == 'macOS'
         run: /bin/bash tests/gate.test.sh && /bin/bash tests/fleet.test.sh
+      - name: lib unit tests and single sources of truth
+        run: bash tests/lib.test.sh && bash tests/ssot.test.sh
+      - name: lib and single sources of truth on bash 3.2 (macOS system bash)
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/lib.test.sh && /bin/bash tests/ssot.test.sh
       - name: python syntax
         run: python3 -m py_compile bin/sous lib/*.py
       - name: validate plugin
