@@ -1359,10 +1359,10 @@ def doctor(root, ios, strict, mode):
 
     hits, scanned = sous_scan.scan_injection(root)
     if hits:
-        msg = f"{len(hits)} hidden-instruction pattern(s) in memory, skills or .mcp.json: `sous lint` lists them"
+        msg = f"{len(hits)} hidden-instruction pattern(s) in memory, rules, skills or .mcp.json: `sous lint` lists them"
         r.bad("strict: " + msg) if strict else r.info(msg)
     elif scanned:
-        r.ok(f"no hidden characters or instruction-dropping lines in {scanned} memory/skill/tool file(s)")
+        r.ok(f"no hidden characters or instruction-dropping lines in {scanned} memory/rule/skill/tool file(s)")
 
     print("Layer 2 tools")
     servers = mcp_servers(root)

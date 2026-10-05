@@ -51,7 +51,7 @@ BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselv
   exit 2
 
 $ sh -c 'cat .env'
-BLOCKED (sous): sh touches .env, a secrets file. Read .env.example for the key names.
+BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names.
   exit 2
 
 $ git status && ls src
@@ -104,10 +104,14 @@ Around those claims:
   "N blocks, M allowed (x% blocked)". It is a block rate, not a false-positive
   rate: you still judge each reason by hand.
 - **Hidden-instruction scan.** `sous lint` and `sous doctor` flag invisible
-  characters (zero-width, bidi controls, tag characters) and lines that tell the
-  agent to drop its instructions, hide something from the user or send a secret
-  out, in memory files, skills, commands, agents and `.mcp.json`. Patterns are a
-  short list, so a clean scan is not proof. `--strict` fails on a hit.
+  characters (zero-width, bidi controls, soft hyphen, tag characters, runs of
+  variation selectors) and lines that tell the agent to drop its instructions,
+  hide something from the user or send a secret out, in memory files
+  (`CLAUDE.md`, `CLAUDE.local.md`, nested `CLAUDE.md`, `AGENTS.md`),
+  `.claude/rules/`, skills, commands, agents and `.mcp.json`. A phrase quoted in
+  a code fence, inline code or quotes inside a sentence is a mention and passes;
+  a `$TOKEN` in a curl header or `-u` argument passes. Patterns are a short
+  list, so a clean scan is not proof. `--strict` fails on a hit.
 - **Spend.** Claude Code has no settings key for a budget, so `doctor --strict`
   reminds you to cap an unattended run with `claude -p --max-budget-usd N`.
 - **Other agents.** `sous compile --to=agents|cursor|copilot` writes the deny

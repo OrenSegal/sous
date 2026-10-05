@@ -60,7 +60,7 @@
       "name": "handoff",
       "source": "./mods/handoff",
       "description": "Mod: after each turn that changes the tree, writes .claude/handoff/LATEST.md and LATEST.patch (secret-looking files excluded) for the next session.",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }
