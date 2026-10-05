@@ -389,6 +389,11 @@ check 0 "python3 -c \"p='.claude/settings.json'; open(p, 'w').write('{}')\""
 check 0 'cd .claude && echo {} > settings.json'
 check 0 "python3 -c \"import os; open(os.path.join('.claude', 'settings.json'), 'w')\""
 check 0 'cp /tmp/evil/.mcp.json .'
+# A patch names its targets inside the file, not on the command line: applying
+# one with hunks for .claude/settings.json (a handoff LATEST.patch can carry them)
+# writes the harness file unseen.
+check 0 'git apply .claude/handoff/LATEST.patch'
+check 0 'patch -p1 < .claude/handoff/LATEST.patch'
 
 # --- Self-improvement log: every block leaves a line, and never the command text
 # (commands can carry secrets). `sous report` reads this file back.
@@ -401,9 +406,23 @@ check 0 'ls -la'
 if [ "$(wc -l <"$SOUS_LOG")" -eq 1 ]; then pass=$((pass + 1)); else
   fail=$((fail + 1)); printf 'FAIL block log: an allowed command wrote a line\n' >&2
 fi
+# Nor does any word of the command reach the reason the agent sees or the log:
+# a path, a glob or a program name can be a secret too.
+: >"$SOUS_LOG"
+for c in 'cat .env.canary-zq81' 'canaryprog .env' 'canaryprog .e*' 'cat ~/.ssh/canary-key' 'rm -rf canary-dir'; do
+  msg=$(jq -cn --arg c "$c" '{tool_input:{command:$c}}' | bash "$HOOK" 2>&1 >/dev/null)
+  case "$msg" in
+    "BLOCKED (sous): "*canary*|"BLOCKED (sous): "*zq81*) fail=$((fail + 1)); printf 'FAIL block reason echoes the command: %s -> %s\n' "$c" "$msg" >&2 ;;
+    "BLOCKED (sous): "*) pass=$((pass + 1)) ;;
+    *) fail=$((fail + 1)); printf 'FAIL want a block: %s -> %s\n' "$c" "$msg" >&2 ;;
+  esac
+done
+if ! grep -q 'canary\|zq81' "$SOUS_LOG"; then pass=$((pass + 1)); else
+  fail=$((fail + 1)); printf 'FAIL block log carries command words:\n' >&2; cat "$SOUS_LOG" >&2
+fi
 
 
-# --- Loop breaker: the same block three times in a row tells the agent to stop
+# --- Loop breaker: the same block three times in two minutes tells the agent to stop
 # retrying. Built from the reason-only log, so no command text is kept.
 : >"$SOUS_LOG"
 # shellcheck disable=SC2069  # stderr is the message; stdout is dropped on purpose
@@ -424,6 +443,16 @@ case "$m5" in *"Stop retrying"*) fail=$((fail + 1)); echo "FAIL loop breaker: es
 CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env' >/dev/null
 m6=$(CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env')
 case "$m6" in *"Stop retrying"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: silent on the 3rd block in one project: $m6" >&2 ;; esac
+# The count is of matching blocks in the recent window, not consecutive ones:
+# another block in between must not make the message claim "in a row".
+: >"$SOUS_LOG"
+guard_msg 'cat .env' >/dev/null; guard_msg 'rm -rf build' >/dev/null; guard_msg 'cat .env' >/dev/null
+m7=$(guard_msg 'cat .env')
+case "$m7" in
+  *"in a row"*) fail=$((fail + 1)); echo "FAIL loop breaker: says in a row after an interleaved block: $m7" >&2 ;;
+  *"Blocked at least 3 times for the same reason in the last two minutes"*) pass=$((pass + 1)) ;;
+  *) fail=$((fail + 1)); echo "FAIL loop breaker: count wording: $m7" >&2 ;;
+esac
 
 # --- Block rate: an allowed command leaves one byte in a per-day counter, never
 # its text, so `sous report` can say how often the guard fires.

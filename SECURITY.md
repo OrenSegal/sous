@@ -12,6 +12,7 @@ sous is a guard, so a bypass is a security bug.
   - paths reached through a `cd`: `cd ~ && cat .ssh/id_rsa`
   - a script written first and run second: a heredoc into `x.sh` then `bash x.sh`, or `curl ... -o x.sh && bash x.sh`
   - harness files written through a path the text doesn't spell out: `p=.claude/settings.json; echo {} > $p`, the same variable inside `python -c`, `cd .claude && echo {} > settings.json`, `os.path.join('.claude', 'settings.json')`, and `cp /tmp/evil/.mcp.json .` (a copy into a directory, keeping a source name the rule exempts as a temp-dir fixture). Harness paths under `/tmp`, `/private/tmp`, `/var/folders` or `$TMPDIR` are exempt on purpose, so test fixtures can be written.
+  - harness files written by applying a patch: `git apply` or `patch -p1 <` with a patch whose hunks touch `.claude/settings.json`, `.claude/hooks/` or `.mcp.json` (the handoff mod's `LATEST.patch` carries such hunks when the tree has them). The targets are inside the patch file, not in the command text the tamper rule reads. Read the patch's file list before applying it.
 
   The OS sandbox (write scope, `denyRead`, network allowlist) is the boundary for those, and `sous doctor` checks it is on.
 - Unverified: Claude Code's docs say the `Edit(...)` deny rules `install` adds also stop Bash redirects and `tee` into those paths. sous has not checked that in a live session, so the guard blocks those spellings itself.
