@@ -61,6 +61,13 @@
       "source": "./mods/handoff",
       "description": "Mod: after each turn that changes the tree, writes .claude/handoff/LATEST.md and LATEST.patch (secret-looking files excluded) for the next session.",
       "version": "0.1.1"
+    },
+    {
+      "name": "blast-shield",
+      "source": "./mods/blast-shield",
+      "description": "Mod: holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL), shows what they would change and whether it can be undone, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius; see its NOTICE.",
+      "version": "1.1.0",
+      "license": "Apache-2.0"
     }
   ]
 }
