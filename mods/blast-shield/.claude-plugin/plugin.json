@@ -1,0 +1,16 @@
+{
+  "name": "blast-shield",
+  "version": "1.1.1",
+  "description": "Holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL and more), shows what they would change and whether you can undo it, and runs them only on your say-so.",
+  "author": {
+    "name": "Oren Segal"
+  },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/OrenSegal/sous",
+  "keywords": [
+    "mods",
+    "safety",
+    "git",
+    "guardrails"
+  ]
+}

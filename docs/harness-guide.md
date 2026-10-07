@@ -142,13 +142,12 @@ report, because today you can only see it by running out of room.
 
 ### Two mods worth installing
 
-- **Blast Radius** ([cskwork/claude-code-mods](https://github.com/cskwork/claude-code-mods),
-  `claude plugin install blast-radius@claude-code-mods`). Before a risky Bash
-  command (recursive delete, `git reset --hard`, force push, `kubectl delete`,
-  SQL wipes) it dry-runs what would be touched and asks Proceed or Cancel. It
-  complements `sous-guard`: the guard refuses outright, this one lets you look
-  and decide. It is third-party; read the source and pin it as the install
-  policy above says.
+- **blast-shield** (`mods/blast-shield` here, `claude plugin install blast-shield@sous`).
+  Before a risky Bash command (recursive delete, `git reset --hard`, force push,
+  `kubectl delete`, SQL wipes) it dry-runs what would be touched and asks
+  Proceed or Cancel. It complements `sous-guard`: the guard refuses outright,
+  this one lets you look and decide. It is an Apache-2.0 fork of Anthropic's
+  Blast Radius mod; its NOTICE lists what changed.
 - **handoff** (`mods/handoff` here, `claude plugin install handoff@sous`). After
   each turn that changes the tree it writes `.claude/handoff/LATEST.md` and
   `LATEST.patch` (secret-looking files excluded, folder self-ignored), so the
