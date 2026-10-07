@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- blast-shield mod 1.1.0 joins the marketplace next to handoff (`claude plugin install blast-shield@sous`), vendored under `mods/blast-shield` from OrenSegal/blast-shield with its Apache-2.0 LICENSE and NOTICE unchanged. It holds risky Bash commands and shows what they would change before you Proceed or Cancel. CI validates it and runs its classifier tests and `test/verify.mjs`.
 - litmus is retired from the marketplace and the toolkit table: its deterministic assertions can pass when they could never fail, and `claude plugin eval` covers the rest.
 - New `sous lint [DIR] [--fix] [--dry-run]`: lists written prohibitions in `CLAUDE.md` / `AGENTS.md` that no rule or guard check enforces; `--fix` adds deny rules through the manifest. It reads every prohibition on a line, not the alternative after "use X instead" or "never skip X", and needs an `Edit` rule (not only a `Read` rule) to call "never edit" enforced.
 - New `compile [DIR] [--to=agents|cursor|copilot] [--write|--remove]`: the deny rules as instructions for agents that don't read `settings.json`. `--write` keeps the file's mode, writes through a symlinked `AGENTS.md`, and refuses (exit 1, file untouched) when the markers are not one begin/end pair or `.cursor/rules/sous.mdc` exists without one.

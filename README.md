@@ -11,6 +11,7 @@ sous: tools for checking what coding agents actually do.
 | [scoped](https://github.com/OrenSegal/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
 | [deuce](https://github.com/OrenSegal/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
 | [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
+| [blast-shield](mods/blast-shield) | A mod that holds risky Bash commands (deletes, force-pushes, `kubectl delete`, `terraform destroy`, SQL wipes), shows what they would change and whether you can undo it, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius ([NOTICE](mods/blast-shield/NOTICE)) | `claude plugin install blast-shield@sous` |
 
 Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
 The rest of this page is about sous itself: a Claude Code harness you install
