@@ -682,6 +682,11 @@ async function measureRm($, risk, cwd) {
   if (risk.targets.length === 0) {
     return { summary: "rm with no paths", lines: [], note: "No paths to expand." };
   }
+  // The tokenizer keeps $VAR, $(...) and backticks as text; the shell would expand them.
+  const unresolved = risk.targets.filter((t) => /[$`]|^~[^/]/.test(t));
+  if (unresolved.length > 0) {
+    return { summary: `${verb} paths I can't resolve: ${unresolved.join(" ")}`, lines: [], note: "The paths use shell variables or substitutions. An empty variable can widen the target, so I can't measure it." };
+  }
   const run = await $.process.run(["bash", "-c", RM_SCRIPT, "blast-shield", ...risk.targets], { cwd, timeoutMs: 15000 });
   const [head, ...rest] = run.stdout.split("\n").filter((l) => l !== "");
   const [files, bytes, found] = (head ?? "0 0 0").split(" ").map(Number);
@@ -739,19 +744,16 @@ async function measureGit($, risk, cwd) {
       note: "From git clean -n. Untracked files are not in git, so they can't be recovered.",
     };
   }
-  const status = await $.process.run(["git", "status", "--porcelain"], { cwd, timeoutMs: 15000 });
+  // Git matches the paths itself: relative to cwd, with ./ prefixes and globs.
+  const pathspec = risk.paths ?? [];
+  const status = await $.process.run(["git", "status", "--porcelain", "--", ...pathspec], { cwd, timeoutMs: 15000 });
   if (status.exitCode !== 0) {
     return { summary: `${risk.label} (not a git repo here?)`, lines: [], note: status.stderr.trim().slice(0, 200) };
   }
   const rows = status.stdout.split("\n").filter((l) => l.length > 3 && !l.startsWith("??"));
-  // reset --hard drops staged and unstaged changes; checkout -- . drops unstaged ones.
-  const inPaths = (l) => risk.paths === undefined || risk.paths.includes(".") || risk.paths.some((p) => {
-    const f = l.slice(3);
-    const q = p.replace(/\/+$/, "");
-    return f === q || f.startsWith(`${q}/`);
-  });
-  const lost = risk.kind === "git-reset" ? rows : rows.filter((l) => l[1] !== " " && inPaths(l));
-  const stat = await $.process.run(["git", "diff", "--shortstat", risk.kind === "git-reset" ? "HEAD" : "--"], { cwd, timeoutMs: 15000 });
+  // reset --hard drops staged and unstaged changes; checkout -- paths drops unstaged ones.
+  const lost = risk.kind === "git-reset" ? rows : rows.filter((l) => l[1] !== " ");
+  const stat = await $.process.run(["git", "diff", "--shortstat", ...(risk.kind === "git-reset" ? ["HEAD"] : ["--", ...pathspec])], { cwd, timeoutMs: 15000 });
   return {
     summary: lost.length === 0 ? "discard nothing: no uncommitted changes" : `discard uncommitted changes in ${lost.length} ${lost.length === 1 ? "file" : "files"}`,
     lines: lost.slice(0, LIST_MAX).map((l) => `${l.slice(0, 2)} ${l.slice(3)}`),
@@ -799,7 +801,13 @@ async function measureTerraform($, risk, cwd) {
   };
 }
 
+// find actions that run commands or write files: the dry run would perform them.
+const FIND_SIDE_EFFECTS = new Set(["-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
+
 async function measureFindDelete($, risk, cwd) {
+  if (risk.args.some((a) => FIND_SIDE_EFFECTS.has(a))) {
+    return { summary: "find with its delete action", lines: [], note: "This find also runs commands or writes files, so I didn't dry-run it." };
+  }
   // The same find with the delete action swapped for -print: what it would remove.
   const argv = ["find", ...risk.args.filter((a) => a !== "-" + "delete"), "-print"];
   const run = await $.process.run(argv, { cwd, timeoutMs: 15000 });

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+- `rm` and recursive `chmod`/`chown` targets that use `$VAR`, `$(...)` or backticks are reported as unresolved instead of "delete nothing".
+- `git checkout`/`restore` paths go to git as pathspecs, so paths from a subfolder, `./` prefixes and globs are matched; the diff stat covers only those paths.
+- `find` with its delete action is no longer dry-run when it also has `-exec`, `-execdir`, `-ok`, `-okdir`, `-fprint`, `-fprint0`, `-fprintf` or `-fls`, since the dry run would perform them.
+
 ## 1.1.0
 
 - New **Impact** section in the pane: what else the command touches beyond the files, from read-only probes.

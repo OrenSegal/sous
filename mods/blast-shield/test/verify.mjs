@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const { classify, measure } = await import(new URL("../hooks/blast-shield.mjs", import.meta.url).href);
@@ -41,6 +41,25 @@ x = await m("terraform destroy");
 check("terraform missing/failing is reported, not thrown", x.rep.summary.length > 0, x.rep);
 x = await m("rm -rf -- '-delete'");
 check("odd filename survives", x.rep.summary.length > 0, x.rep);
+// review fixes: unresolved shell expansions, git pathspecs, find side effects
+sh("echo again>src/a.js && echo again>src/b.js", d); // the stash above took the earlier edits
+x = await m('rm -rf "$BLAST_SHIELD_UNSET/"');
+check("rm with a shell variable is unresolved, not 'nothing'", /can't resolve/.test(x.rep.summary) && !/nothing/.test(x.rep.summary), x.rep);
+x = await m("rm -rf `pwd`/build");
+check("rm with a command substitution is unresolved", /can't resolve/.test(x.rep.summary), x.rep);
+x = { rep: await measure($, classify("cd src && git checkout -- a.js"), join(d, "src")) };
+check("checkout from a subfolder lists src/a.js", x.rep.lines.length === 1 && x.rep.lines[0].includes("src/a.js"), x.rep);
+x = await m("git checkout -- ./src/a.js");
+check("checkout ./src/a.js lists it", x.rep.lines.length === 1 && x.rep.lines[0].includes("src/a.js"), x.rep);
+x = await m("git restore 'src/*.js'");
+check("restore glob lists both", x.rep.lines.length === 2, x.rep);
+x = await m("git checkout -- src/a.js");
+check("checkout shortstat counts only the target", /^1 file changed/.test(x.rep.note), x.rep);
+x = await m("find build -name x -exec touch " + join(d, "pwned") + " {} + -" + "delete");
+check("find with -exec is not dry-run", !existsSync(join(d, "pwned")) && /didn't dry-run/.test(x.rep.note), x.rep);
+x = await m("find build -name x -fprint " + join(d, "pwned2") + " -" + "delete");
+check("find with -fprint is not dry-run", !existsSync(join(d, "pwned2")) && /didn't dry-run/.test(x.rep.note), x.rep);
+
 x = await m("git push -uf origin main");
 check("push -uf reports no remote copy", x.rep.note.includes("origin/main") || x.rep.summary.includes("force-push"), x.rep);
 

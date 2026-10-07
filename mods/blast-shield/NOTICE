@@ -16,6 +16,9 @@ Changes made in Blast Shield (Apache-2.0, section 4(b)):
   branch deletes and stashes.
 - Pane: Held and Undo lines, wrapped command, clearer key hint; the refusal message
   names the matched rule.
+- Measuring safety: rm/chmod targets with shell expansions are reported as unresolved,
+  git checkout/restore paths are passed to git as pathspecs, and find is not dry-run
+  when it also has -exec, -ok or -fprint style actions.
 - Tests: classifier tests (hooks/classify.test.ts) and a real-process check (test/verify.mjs).
 
 Not an official Anthropic product, and not endorsed by Anthropic. "Claude" and "Claude
