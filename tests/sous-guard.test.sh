@@ -67,6 +67,39 @@ check 0 'cat .env.example'
 check 0 'grep SUPABASE .env.example'
 check 0 'ls -la .env*'
 check 0 'git status --short .env.example'
+# A name that only starts with the same letters is not a secrets file.
+check 0 'rg -n ".environment(AppEnvironment.makePreview())" ios/App'
+check 0 'grep -rn "\.environmentObject" ios'
+check 0 'cat docs/.envelope-notes.md'
+check 2 'cat .envrc'
+check 2 'cat .env-prod'
+check 2 'cat .env_old'
+check 2 'cat .envr*'
+# A quoted regex handed to a search tool is a pattern, not a glob.
+check 0 'rg -n "Suite .*Tests" ios/Packages'
+check 0 "grep -E '.*Service' Sources/A.swift"
+check 0 'rg -n ".*" README.md'
+check 0 "rg -c '.?' README.md"
+# A quoted | ; & is part of the regex, not the end of the command.
+check 0 'rg -n "struct Foo|Suite .*" ios/Packages'
+check 0 'rg -n "func test.*|Test .*" ios'
+check 0 "grep -En 'a;.*|b&.*' notes.md"
+check 2 'rg -n "a|b" x | grep TOKEN .e*'
+check 2 "rg -n 'a;b' x; cat .e*"
+# An unquoted glob still expands, and so does a quoted one that a program globs itself.
+check 2 'grep TOKEN .e*'
+check 2 'rg KEY .*'
+check 2 'grep TOKEN ".e"*'
+check 2 "grep TOKEN '.e*' .e*"
+check 2 'rg -g ".e*" KEY'
+check 2 "grep -r --include '.e*' KEY ."
+check 2 "find . -name '.e*' -exec cat {} +"
+check 2 "cat '.e*' .e*"
+check 2 "sh -c 'grep TOKEN .e*'"
+check 2 "echo ok; sh -c 'true; grep TOKEN .e*'"
+check 2 'echo "$(grep TOKEN .e*)"'
+check 2 "echo hi # don't
+grep TOKEN .e* # it's"
 
 # Heredoc bodies are data (commit messages, docs), not commands...
 check 0 "git commit -F - <<'MSG'

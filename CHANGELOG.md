@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.1
+
+- Guard, secrets check: a glob character or a `|`, `;`, `&` inside quotes is a regex for `rg`, `grep`, `ag`, `ack`, `sed` and `awk`, so `rg "Foo|Suite .*" src` runs. The check stays strict with a glob flag (`-g`, `--include`), with a program that parses a string as shell again (`sh -c`, `eval`, an interpreter) and for a command over 2048 characters. A name that only starts with the same letters (`.environment(`, `.envelope`) is not a secrets file. `echo "$(grep TOKEN .e*)"` is now blocked; the `)` that closes `$(...)` hid the glob.
+- The version is 0.3.1 so an installed plugin copy refreshes. The guard changed several times under 0.3.0, and a cached 0.3.0 copy could be older code with the same `SOUS_GUARD_VERSION`.
 - blast-shield mod 1.1.0 joins the marketplace next to handoff (`claude plugin install blast-shield@sous`), vendored under `mods/blast-shield` from OrenSegal/blast-shield with its Apache-2.0 LICENSE and NOTICE unchanged. It holds risky Bash commands and shows what they would change before you Proceed or Cancel. CI validates it and runs its classifier tests and `test/verify.mjs`.
 - litmus is retired from the marketplace and the toolkit table: its deterministic assertions can pass when they could never fail, and `claude plugin eval` covers the rest.
 - New `sous lint [DIR] [--fix] [--dry-run]`: lists written prohibitions in `CLAUDE.md` / `AGENTS.md` that no rule or guard check enforces; `--fix` adds deny rules through the manifest. It reads every prohibition on a line, not the alternative after "use X instead" or "never skip X", and needs an `Edit` rule (not only a `Read` rule) to call "never edit" enforced.
