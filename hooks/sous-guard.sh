@@ -31,7 +31,7 @@
 
 # `sous doctor` compares this stamp between the plugin's guard and a project's
 # copy to report drift; `sous-guard.sh --version` prints it.
-SOUS_GUARD_VERSION=0.3.0
+SOUS_GUARD_VERSION=0.3.1
 
 # Prints the block reason and returns 1 when $1 must not run; returns 0 otherwise.
 # Every block appends "epoch<TAB>reason<TAB>project dir" to $SOUS_LOG (default
@@ -72,6 +72,59 @@ sous_guard() {
   fi
   printf '%s\n' "$shown"
   return 1
+}
+
+# Sets _sous_q to $1 with * ? [ | ; & inside a quoted span swapped for \001 to
+# \006, so the secrets check can tell a quoted regex (rg ".*") from a glob bash
+# expands (rg KEY .*), and does not cut a segment at a quoted | (rg "a|b .*"). A double-quoted span that holds $ or a
+# backtick keeps its text, because bash expands inside it. A # comment runs to
+# the end of its line, so an apostrophe in it opens nothing. Returns 1, with
+# nothing swapped, on a quote that never closes.
+_sous_quote_globs() {
+  local s="$1" n=${#1} i=0 dq=0 c out="" buf="" prev=" " tail
+  local g1='*' g2='?' g3='[' p1=$'\001' p2=$'\002' p3=$'\003' lf=$'\n'
+  local g4='|' g5=';' g6='&' p4=$'\004' p5=$'\005' p6=$'\006'
+  _sous_q=""
+  while (( i < n )); do
+    c="${s:i:1}"
+    if (( dq )); then
+      case $c in
+        \\) buf+="$c${s:i+1:1}"; i=$((i + 1)) ;;
+        \")
+          if [[ $buf != *[\$\`]* ]]; then
+            buf="${buf//"$g1"/$p1}"; buf="${buf//"$g2"/$p2}"; buf="${buf//"$g3"/$p3}"
+            buf="${buf//"$g4"/$p4}"; buf="${buf//"$g5"/$p5}"; buf="${buf//"$g6"/$p6}"
+          fi
+          out+="\"$buf\""; dq=0 ;;
+        *) buf+="$c" ;;
+      esac
+    else
+      case $c in
+        \\) out+="$c${s:i+1:1}"; i=$((i + 1)) ;;
+        \")  dq=1; buf="" ;;
+        \')
+          tail="${s:i+1}"
+          [[ $tail == *\'* ]] || return 1
+          buf="${tail%%\'*}"
+          i=$((i + ${#buf} + 1))
+          buf="${buf//"$g1"/$p1}"; buf="${buf//"$g2"/$p2}"; buf="${buf//"$g3"/$p3}"
+          buf="${buf//"$g4"/$p4}"; buf="${buf//"$g5"/$p5}"; buf="${buf//"$g6"/$p6}"
+          out+="'$buf'" ;;
+        '#')
+          if [[ $prev == [[:space:]\;\&\|\(] ]]; then
+            tail="${s:i}"; tail="${tail%%"$lf"*}"
+            out+="$tail"; i=$((i + ${#tail} - 1))
+          else
+            out+="$c"
+          fi ;;
+        *) out+="$c" ;;
+      esac
+    fi
+    prev="$c"
+    i=$((i + 1))
+  done
+  (( dq )) && return 1
+  _sous_q="$out"
 }
 
 _sous_match() {
@@ -140,6 +193,27 @@ _sous_match() {
     scan+="$lf$(printf '%s\n' "$scan" | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }')"
   fi
 
+  # 2d. A glob character inside quotes does not expand: in `rg ".*" src`, `.*`
+  #     is a regex. Mark those characters (see _sous_quote_globs) so step 6 can
+  #     skip them for a search tool. Every other step reads the unmarked text.
+  #     Not done when a program in the command parses a string as shell again
+  #     (sh -c, eval, ssh, an interpreter), and not for long commands.
+  local ph1=$'\001' ph2=$'\002' ph3=$'\003' ph4=$'\004' ph5=$'\005' ph6=$'\006' chk
+  local phs="$ph1$ph2$ph3$ph4$ph5$ph6"
+  local re_reparse='(^|[^[:alnum:]_.-])(sh|bash|zsh|dash|ksh|fish|eval|ssh|osascript|parallel|watch|source|su|script|expect|trap|alias|python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
+  if [[ $scan == *["$phs"]* ]]; then
+    scan="${scan//"$ph1"/}"; scan="${scan//"$ph2"/}"; scan="${scan//"$ph3"/}"
+    scan="${scan//"$ph4"/}"; scan="${scan//"$ph5"/}"; scan="${scan//"$ph6"/}"
+  fi
+  if (( ${#scan} <= 2048 )) && [[ $scan == *[\'\"]* && $scan == *.*[\*\?\[]* ]]; then
+    chk="${scan//\"/}"
+    chk="${chk//\'/}"
+    chk="${chk//\\/}"
+    if ! [[ $chk =~ $re_reparse ]] && _sous_quote_globs "$scan"; then
+      scan="$_sous_q"
+    fi
+  fi
+
   # 3. Normalize: quotes and backslashes don't change which program runs, and
   #    ${IFS} is a space. Past a few KB, ${var//x/} is quadratic in bash 3.2
   #    (tens of seconds on a 16KB command, past the hook timeout), so long text
@@ -157,6 +231,12 @@ _sous_match() {
     norm="${norm/"${BASH_REMATCH[0]}"/ }"
     n=$((n + 1))
   done
+  # qnorm keeps the 2d marks for step 6; norm is the plain text again.
+  local qnorm="$norm"
+  if [[ $norm == *["$phs"]* ]]; then
+    norm="${norm//"$ph1"/*}"; norm="${norm//"$ph2"/?}"; norm="${norm//"$ph3"/[}"
+    norm="${norm//"$ph4"/|}"; norm="${norm//"$ph5"/;}"; norm="${norm//"$ph6"/&}"
+  fi
 
   # 4. Recursive force delete. Collect each rm's flag run, then test the flags.
   #    Any path to rm (or GNU grm), and commas count as separators so brace
@@ -219,7 +299,10 @@ _sous_match() {
   # 6. Secrets: per command segment, any mention of a secrets path, unless the
   #    segment's program only lists or stats it. Case-insensitive (macOS and
   #    Windows filesystems are), and globs are tested against the real names.
-  local segs="$norm" allow_re='^(ls|git|test|\[|stat)$'
+  local segs="$qnorm" allow_re='^(ls|git|test|\[|stat)$'
+  # A search tool takes a regex; these flags make it take a glob instead.
+  local qseg gsrc search_re='^(rg|grep|egrep|fgrep|ag|ack|sed|awk|gawk)$'
+  local re_globflag='[[:space:]](-[[:alnum:]]*[gG]([[:space:]]|$)|--(i?glob|include|exclude|pre-glob|type-add|files))'
   local re_env='(^|[^[:alnum:]_])(\.[eE][nN][vV?*][[:alnum:]_.*?-]*)'
   local re_home='(~[[:alnum:]_.-]*|\$HOME|\$\{HOME\}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+|/root|/var/root)/(\.[^/[:space:]]+)'
   local re_interp_cmd='(^|[;&|(`[:space:]/])(python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
@@ -241,7 +324,12 @@ _sous_match() {
   local had_noglob=0 reason=""
   case $- in *f*) had_noglob=1 ;; esac
   set -f
-  while IFS= read -r seg; do
+  while IFS= read -r qseg; do
+    seg="$qseg"
+    if [[ $qseg == *["$phs"]* ]]; then
+      seg="${seg//"$ph1"/*}"; seg="${seg//"$ph2"/?}"; seg="${seg//"$ph3"/[}"
+      seg="${seg//"$ph4"/|}"; seg="${seg//"$ph5"/;}"; seg="${seg//"$ph6"/&}"
+    fi
     first=""
     for tok in $seg; do
       case "$tok" in
@@ -296,15 +384,26 @@ _sous_match() {
       low=$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')
       case "$low" in
         *.example|*.sample|*.template|*.dist) continue ;;
+        .envrc*) ;;
+        # .environment( is a SwiftUI modifier and .envelope is a word. A glob
+        # in such a name (.envr*) is tested against the real names below.
+        .env[a-z]*) continue ;;
       esac
       reason="the command names .env or a variant, a secrets file. Read .env.example for the key names."
       break 2
     done
     # A glob that starts with a dot reaches dotfiles: .e*, .[e]nv, .?nv, .*
-    for tok in $seg; do
+    # For a search tool, a quoted glob character (still marked in qseg) is a
+    # regex and is not tested, unless a flag makes the tool glob.
+    gsrc="$seg"
+    if [[ $qseg != "$seg" && $first =~ $search_re ]] && ! [[ $seg =~ $re_globflag ]]; then
+      gsrc="$qseg"
+    fi
+    for tok in $gsrc; do
       case $tok in *[\*\?\[]*) ;; *) continue ;; esac
       comp="${tok##*/}"
       comp="${comp#[<>]}"
+      comp="${comp%%)*}"  # the ) that closes $(...) is not part of the name
       case $comp in .*|'[.]'*) ;; *) continue ;; esac
       low=$(printf '%s' "$comp" | tr '[:upper:]' '[:lower:]')
       for cand in .env .env.local .envrc .env.production .env.development; do
