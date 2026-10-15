@@ -189,6 +189,16 @@ check 2 'jq "$(cat .env)" a.json'
 check 2 'jq --arg k "$(cat .env)" .x a.json'
 check 2 'jq .x`cat .env`'
 check 2 "jq '.env' a.json; cat .env"
+# last30days first-run gate: a quiet grep for one fixed key prints no secret.
+check 0 'grep -q "SETUP_COMPLETE=true" ~/.config/last30days/.env 2>/dev/null && echo "1" || echo "FIRST_RUN_DETECTED"'
+check 0 'grep -q SETUP_COMPLETE=true ~/.config/last30days/.env'
+check 2 'grep SETUP_COMPLETE=true ~/.config/last30days/.env'
+check 2 'grep -q KEY ~/.config/last30days/.env'
+check 2 'grep -q SETUP_COMPLETE=true ~/.config/last30days/.env .env'
+check 2 'grep -q SETUP_COMPLETE=true ~/.config/other/.env'
+check 2 'grep -q -f ~/.config/last30days/.env x'
+check 2 'grep -q SETUP_COMPLETE=true ~/.config/last30days/.env; cat ~/.config/last30days/.env'
+check 2 'cat ~/.config/last30days/.env'
 
 # --- harness tamper: Bash writes to the files that hold the harness itself
 # (.claude/settings*.json, .claude/hooks/**, .mcp.json). The Edit deny rules

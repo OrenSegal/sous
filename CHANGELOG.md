@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Guard, secrets check: `grep -q SETUP_COMPLETE=true ~/.config/last30days/.env` runs. It is the first-run check of the last30days skill, and `grep -q` prints no file content. Only that exact shape passes: plain `grep`, another key, a second file, `-f`, or a `cat` after it stay blocked.
+
 ## 0.3.1
 
 - Guard, secrets check: a glob character or a `|`, `;`, `&` inside quotes is a regex for `rg`, `grep`, `ag`, `ack`, `sed` and `awk`, so `rg "Foo|Suite .*" src` runs. The check stays strict with a glob flag (`-g`, `--include`), with a program that parses a string as shell again (`sh -c`, `eval`, an interpreter) and for a command over 2048 characters. A name that only starts with the same letters (`.environment(`, `.envelope`) is not a secrets file. `echo "$(grep TOKEN .e*)"` is now blocked; the `)` that closes `$(...)` hid the glob.
