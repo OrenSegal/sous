@@ -304,6 +304,8 @@ _sous_match() {
   local qseg gsrc search_re='^(rg|grep|egrep|fgrep|ag|ack|sed|awk|gawk)$'
   local re_globflag='[[:space:]](-[[:alnum:]]*[gG]([[:space:]]|$)|--(i?glob|include|exclude|pre-glob|type-add|files))'
   local re_env='(^|[^[:alnum:]_])(\.[eE][nN][vV?*][[:alnum:]_.*?-]*)'
+  # The last30days skill's first-run gate. `grep -q` on one fixed key prints no secret.
+  local re_l30_gate='^[[:space:]]*grep[[:space:]]+-q[[:space:]]+["'\'']?SETUP_COMPLETE=true["'\'']?[[:space:]]+(~|\$HOME)/\.config/last30days/\.env([[:space:]]+2>/dev/null)?[[:space:]]*$'
   local re_home='(~[[:alnum:]_.-]*|\$HOME|\$\{HOME\}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+|/root|/var/root)/(\.[^/[:space:]]+)'
   local re_interp_cmd='(^|[;&|(`[:space:]/])(python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
   local re_api='(^|[^[:alnum:]_])(rmtree|remove_tree|rm_rf|rm_r|remove_dir|remove_entry_secure|RemoveAll)([[:space:]]*\(|[[:space:]]+[^[:space:]=])|\.(rmSync|rmdirSync|rm|rmdir)\([^)]*recursive'
@@ -365,6 +367,7 @@ _sous_match() {
       esac
     fi
     [[ $first =~ $allow_re ]] && continue
+    [[ $seg =~ $re_l30_gate ]] && continue
     rest="$seg"
     while [[ $rest =~ $re_home ]]; do
       rest="${rest#*"${BASH_REMATCH[0]}"}"
