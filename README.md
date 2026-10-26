@@ -2,20 +2,37 @@
 
 sous: tools for checking what coding agents actually do.
 
-## The toolkit
+[![ci](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-| Plugin | What it checks | Install |
-|---|---|---|
-| [sous](https://github.com/OrenSegal/sous) | Bash calls that delete, force-push or read secrets; green test runs that ran nothing; whether the harness still holds | `claude plugin install sous@sous` |
-| [cited](https://github.com/OrenSegal/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
-| [scoped](https://github.com/OrenSegal/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
-| [deuce](https://github.com/OrenSegal/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
-| [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
-| [blast-shield](mods/blast-shield) | A mod that holds risky Bash commands (deletes, force-pushes, `kubectl delete`, `terraform destroy`, SQL wipes), shows what they would change and whether you can undo it, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius ([NOTICE](mods/blast-shield/NOTICE)) | `claude plugin install blast-shield@sous` |
+sous is a Claude Code harness you install in one command. A guard hook blocks
+Bash calls that delete, force-push or read secrets, including the spellings
+deny rules miss, and every guard rule has a block test and an allow test
+(`tests/rules.test.sh`). `tests-ran` and `tests-weakened` catch green test
+runs that ran nothing or went green by deleting, skipping or loosening tests,
+and `sous doctor` and `sous gate` re-check that all of it still holds.
 
-Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
-The rest of this page is about sous itself: a Claude Code harness you install
-in one command, and a doctor that proves it still holds.
+Real output from `bash docs/demo.sh`, which feeds each command to the guard:
+
+```text
+$ /bin/rm -rf build
+BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user.
+  exit 2
+
+$ git -C . push -f origin main
+BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it.
+  exit 2
+
+$ sh -c 'cat .env'
+BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names.
+  exit 2
+
+$ git status && ls src
+  exit 0
+```
+
+Used by: [rootcause](https://github.com/OrenSegal/rootcause) scenarios 008, 023
+and 024 are recorded from failed sous CI runs.
 
 ## The harness
 
@@ -39,25 +56,6 @@ the edit that made the tests pass by deleting, skipping or loosening them. `xcod
 Vitest and Jest stay green when every test is skipped; `tests-ran --help` lists
 the formats it reads. It reports the largest count it finds, not a sum, so it
 is a zero-detector, not a coverage number.
-
-Real output from `bash docs/demo.sh`, which feeds each command to the guard:
-
-```text
-$ /bin/rm -rf build
-BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user.
-  exit 2
-
-$ git -C . push -f origin main
-BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it.
-  exit 2
-
-$ sh -c 'cat .env'
-BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names.
-  exit 2
-
-$ git status && ls src
-  exit 0
-```
 
 Runs on macOS and Linux (bash and Python 3); on Windows use WSL.
 
@@ -178,6 +176,19 @@ manifest, so `uninstall` refuses there. Either remove by hand what
 `.claude/skills/test-audit`, or run `sous upgrade` first; `uninstall` then
 removes what that upgrade added.
 
+## The toolkit
+
+| Plugin | What it checks | Install |
+|---|---|---|
+| [sous](https://github.com/OrenSegal/sous) | Bash calls that delete, force-push or read secrets; green test runs that ran nothing; whether the harness still holds | `claude plugin install sous@sous` |
+| [cited](https://github.com/OrenSegal/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
+| [scoped](https://github.com/OrenSegal/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
+| [deuce](https://github.com/OrenSegal/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
+| [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
+| [blast-shield](mods/blast-shield) | A mod that holds risky Bash commands (deletes, force-pushes, `kubectl delete`, `terraform destroy`, SQL wipes), shows what they would change and whether you can undo it, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius ([NOTICE](mods/blast-shield/NOTICE)) | `claude plugin install blast-shield@sous` |
+
+Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
+
 ## Doctor, report, probe
 
 `sous doctor` checks every layer and also fails on bloat and rot: a memory
@@ -284,4 +295,4 @@ every pinned plugin ref in `.claude-plugin/marketplace.json` resolves to its
 sha (exit 75: a remote was unreachable). [`evals/`](evals) holds
 `claude plugin eval` cases; they run real sessions, so CI skips them.
 
-MIT licensed.
+[MIT licensed](LICENSE).
