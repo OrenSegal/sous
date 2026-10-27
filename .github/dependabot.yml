@@ -4,3 +4,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  - package-ecosystem: npm
+    directory: /plugins/scoped
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directories: [/plugins/cited, /plugins/deuce]
+    schedule:
+      interval: weekly

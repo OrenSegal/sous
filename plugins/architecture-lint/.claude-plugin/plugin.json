@@ -1,0 +1,10 @@
+{
+  "name": "architecture-lint",
+  "version": "1.1.0",
+  "description": "Module-boundary linter with a ratchet baseline: copies architecture-lint.sh into the project, sets the boundary list, records the current violation count, and fails only when it grows.",
+  "author": { "name": "Oren Segal" },
+  "homepage": "https://github.com/OrenSegal/sous/tree/main/plugins/architecture-lint",
+  "repository": "https://github.com/OrenSegal/sous",
+  "license": "MIT",
+  "keywords": ["architecture", "lint", "module-boundaries", "ratchet", "ci", "claude-code"]
+}

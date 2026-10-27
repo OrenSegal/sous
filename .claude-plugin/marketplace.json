@@ -13,12 +13,7 @@
     },
     {
       "name": "cited",
-      "source": {
-        "source": "github",
-        "repo": "OrenSegal/cited",
-        "ref": "v0.3.1",
-        "sha": "b35a39354473fc373e43f32a8393f96e9c300efe"
-      },
+      "source": "./plugins/cited",
       "description": "Re-fetches every cited source and flags claims whose words, numbers or names are not on the page.",
       "version": "0.3.1",
       "author": {
@@ -28,12 +23,7 @@
     },
     {
       "name": "scoped",
-      "source": {
-        "source": "github",
-        "repo": "OrenSegal/scoped",
-        "ref": "v0.4.1",
-        "sha": "4fc58570d47ee5df9838e79e9595cf67d5d65d6b"
-      },
+      "source": "./plugins/scoped",
       "description": "File claims between concurrent Claude Code sessions, enforced by a PreToolUse hook.",
       "version": "0.4.1",
       "author": {
@@ -43,14 +33,19 @@
     },
     {
       "name": "deuce",
-      "source": {
-        "source": "github",
-        "repo": "OrenSegal/deuce",
-        "ref": "v0.1.1",
-        "sha": "9f76c88b9c2e65f5e873ea06da000a2ab199a08e"
-      },
+      "source": "./plugins/deuce",
       "description": "Post-merge cleanup: finds merged branches, dry-runs the sweep, then removes worktrees and local and remote branches on approval, with an audit log and undo.",
       "version": "0.1.1",
+      "author": {
+        "name": "Oren Segal"
+      },
+      "license": "MIT"
+    },
+    {
+      "name": "architecture-lint",
+      "source": "./plugins/architecture-lint",
+      "description": "Module-boundary linter with a ratchet baseline: fails CI only when the count of forbidden imports or singletons grows.",
+      "version": "1.1.0",
       "author": {
         "name": "Oren Segal"
       },
@@ -64,9 +59,14 @@
     },
     {
       "name": "blast-shield",
-      "source": "./mods/blast-shield",
-      "description": "Mod: holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL), shows what they would change and whether it can be undone, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius; see its NOTICE.",
-      "version": "1.1.1",
+      "source": {
+        "source": "github",
+        "repo": "OrenSegal/blast-shield",
+        "ref": "v1.1.0",
+        "sha": "bda266f5fd7b05a1399bd44bb6fc37493921dcff"
+      },
+      "description": "Mod: holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL), shows what they would change and whether it can be undone, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius, kept in its own repo; see its NOTICE.",
+      "version": "1.1.0",
       "license": "Apache-2.0"
     }
   ]

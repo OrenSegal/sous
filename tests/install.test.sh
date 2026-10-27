@@ -590,8 +590,9 @@ rows = {re.match(r"\| \[([\w-]+)\]", ln).group(1): ln for ln in table.splitlines
 assert sorted(rows) == sorted(p["name"] for p in m["plugins"]), sorted(rows)
 src = {p["name"]: p["source"] for p in m["plugins"]}
 for name, row in rows.items():
-    # a mod that lives in this repo links to its folder; the rest link to their own repo
-    home = f"(mods/{name})" if src[name] == f"./mods/{name}" else f"(https://github.com/OrenSegal/{name})"
+    # a plugin in a subfolder of this repo links to that folder; sous itself and pinned repos link to their repo
+    s = src[name]
+    home = f"({s[2:]})" if isinstance(s, str) and s != "./" else f"(https://github.com/OrenSegal/{name})"
     assert home in row, row
     assert f"`claude plugin install {name}@{mk}`" in row, row' "$REPO"
 # Every suite runs in CI (bash and macOS bash 3.2) and is listed for contributors.

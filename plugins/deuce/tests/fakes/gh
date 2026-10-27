@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""A stand-in for the GitHub CLI, for tests only. It answers
+`gh pr list --head BRANCH --json FIELDS` from the JSON file in FAKE_GH_PRS
+({"branch": [pr, ...]}), logs every call to FAKE_GH_LOG, and fails like an
+unauthenticated gh when FAKE_GH_FAIL is set. It never touches the network."""
+
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+log = os.environ.get("FAKE_GH_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(args) + "\n")
+
+failure = os.environ.get("FAKE_GH_FAIL")
+if failure:
+    sys.stderr.write(failure + "\n")
+    sys.exit(1)
+
+if args[:2] != ["pr", "list"] or "--head" not in args or "--json" not in args:
+    sys.stderr.write("fake gh: unsupported call: " + " ".join(args) + "\n")
+    sys.exit(2)
+
+head = args[args.index("--head") + 1]
+fields = args[args.index("--json") + 1].split(",")
+with open(os.environ["FAKE_GH_PRS"], encoding="utf-8") as handle:
+    prs = json.load(handle).get(head, [])
+state = args[args.index("--state") + 1].upper() if "--state" in args else "OPEN"
+if state != "ALL":
+    prs = [pr for pr in prs if pr["state"] == state]
+print(json.dumps([{key: pr.get(key) for key in fields} for pr in prs]))

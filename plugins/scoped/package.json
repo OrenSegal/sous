@@ -1,0 +1,35 @@
+{
+  "name": "scoped",
+  "version": "0.4.1",
+  "description": "File claims between concurrent Claude Code sessions, enforced by a PreToolUse hook, with an MCP server for claim, release, check and status.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OrenSegal/sous.git",
+    "directory": "plugins/scoped"
+  },
+  "homepage": "https://github.com/OrenSegal/sous/tree/main/plugins/scoped#readme",
+  "bugs": {
+    "url": "https://github.com/OrenSegal/sous/issues"
+  },
+  "bin": {
+    "scoped": "./bin/scoped",
+    "scoped-mcp": "./bin/scoped-mcp"
+  },
+  "main": "src/index.mjs",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node --watch src/index.mjs",
+    "setup": "node scripts/install.mjs",
+    "uninstall": "node scripts/uninstall.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "zod": "^4.6.5"
+  },
+  "license": "MIT"
+}

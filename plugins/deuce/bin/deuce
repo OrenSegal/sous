@@ -1,0 +1,25 @@
+#!/bin/sh
+# deuce launcher: find Python 3.10+ and run the deuce package next to this
+# script. Python runs isolated (-I), so a deuce/ or subprocess.py in the
+# current directory (an agent's checkout) cannot shadow the real code.
+set -eu
+
+self=$0
+while [ -L "$self" ]; do
+  target=$(readlink "$self")
+  case $target in
+    /*) self=$target ;;
+    *) self=$(dirname "$self")/$target ;;
+  esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd -P)
+
+for py in ${DEUCE_PYTHON:-} python3 python; do
+  if command -v "$py" >/dev/null 2>&1 &&
+    "$py" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+    exec "$py" -I -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from deuce.cli import main; sys.exit(main())' "$root" "$@"
+  fi
+done
+
+echo "deuce: needs Python 3.10 or newer on PATH (or set DEUCE_PYTHON)" >&2
+exit 2

@@ -1,0 +1,10 @@
+{
+  "name": "deuce",
+  "version": "0.1.1",
+  "description": "The cleanup after a branch merges: finds local branches merged into base (squash merges too, through gh), shows a dry run, and on approval removes their clean worktrees, local and remote branches, with an audit log and undo.",
+  "author": { "name": "Oren Segal" },
+  "homepage": "https://github.com/OrenSegal/sous/tree/main/plugins/deuce",
+  "repository": "https://github.com/OrenSegal/sous",
+  "license": "MIT",
+  "keywords": ["git", "worktrees", "branches", "cleanup", "agents", "claude-code"]
+}
