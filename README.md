@@ -5,6 +5,41 @@ sous: tools for checking what coding agents actually do.
 [![ci](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
+One marketplace, seven Claude Code plugins, five layers. Each layer catches a
+different way an agent's work goes wrong, and each plugin installs on its own:
+
+1. **Block** what should never run. `sous` stops Bash calls that delete,
+   force-push or read secrets; `blast-shield` holds risky commands and shows
+   what they would change before you let them run.
+2. **Verify** what the agent says it did. `sous` catches green test runs that
+   ran nothing or went green by weakening tests; `cited` re-fetches every cited
+   source and flags claims that are not on the page.
+3. **Coordinate** sessions working at once. `scoped` lets concurrent sessions
+   claim files, enforced by a hook; `handoff` leaves a resume note and patch
+   for the next session.
+4. **Clean up** after a merge. `deuce` finds merged branches and worktrees,
+   dry-runs the sweep, and removes them on approval, with an audit log and undo.
+5. **Enforce architecture.** `architecture-lint` fails CI when the count of
+   forbidden imports between modules grows, without a fix-everything PR first.
+
+## The toolkit
+
+| Plugin | What it checks | Install |
+|---|---|---|
+| [sous](https://github.com/OrenSegal/sous) | Bash calls that delete, force-push or read secrets; green test runs that ran nothing; whether the harness still holds | `claude plugin install sous@sous` |
+| [blast-shield](https://github.com/OrenSegal/blast-shield) | A mod that holds risky Bash commands (deletes, force-pushes, `kubectl delete`, `terraform destroy`, SQL wipes), shows what they would change and whether you can undo it, and runs them only on Proceed. Apache-2.0 (not MIT) fork of Anthropic's Blast Radius, kept in its own repo ([NOTICE](https://github.com/OrenSegal/blast-shield/blob/main/NOTICE)) | `claude plugin install blast-shield@sous` |
+| [cited](plugins/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
+| [scoped](plugins/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
+| [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
+| [deuce](plugins/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
+| [architecture-lint](plugins/architecture-lint) | Imports that cross a module boundary your architecture forbids, ratcheted against a baseline count | `claude plugin install architecture-lint@sous` |
+
+Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
+Each plugin's folder has its own README and tests; the rest of this
+page documents `sous` itself.
+
+## sous
+
 sous is a Claude Code harness you install in one command. A guard hook blocks
 Bash calls that delete, force-push or read secrets, including the spellings
 deny rules miss, and every guard rule has a block test and an allow test
@@ -176,19 +211,6 @@ manifest, so `uninstall` refuses there. Either remove by hand what
 `.claude/skills/test-audit`, or run `sous upgrade` first; `uninstall` then
 removes what that upgrade added.
 
-## The toolkit
-
-| Plugin | What it checks | Install |
-|---|---|---|
-| [sous](https://github.com/OrenSegal/sous) | Bash calls that delete, force-push or read secrets; green test runs that ran nothing; whether the harness still holds | `claude plugin install sous@sous` |
-| [cited](https://github.com/OrenSegal/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
-| [scoped](https://github.com/OrenSegal/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
-| [deuce](https://github.com/OrenSegal/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
-| [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
-| [blast-shield](mods/blast-shield) | A mod that holds risky Bash commands (deletes, force-pushes, `kubectl delete`, `terraform destroy`, SQL wipes), shows what they would change and whether you can undo it, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius ([NOTICE](mods/blast-shield/NOTICE)) | `claude plugin install blast-shield@sous` |
-
-Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
-
 ## Doctor, report, probe
 
 `sous doctor` checks every layer and also fails on bloat and rot: a memory
@@ -227,7 +249,7 @@ this worktree since the branch forked, and doctor has no FAIL. Blocks you
 reviewed stay acknowledged after `sous gate --ack-blocks`. A linked worktree
 whose `.claude` settings or `.mcp.json` differ from the main checkout's gets a
 warning: a gitignored `settings.local.json` is not checked out into a new
-worktree. With [scoped](https://github.com/OrenSegal/scoped) on `PATH`, a
+worktree. With [scoped](plugins/scoped) on `PATH`, a
 changed file another session claims fails the gate. A plugin surface that
 changed since `sous accept` warns (outside CI). With a `CHANGELOG.md`, a
 version bumped in `.claude-plugin/plugin.json` or `package.json` with no
@@ -290,9 +312,11 @@ only applies when it covers every command in a compound call, so
 ## Development
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the test commands. None of the suites
-touch your `~/.claude` or the network. `sous marketplace-check` verifies that
-every pinned plugin ref in `.claude-plugin/marketplace.json` resolves to its
-sha (exit 75: a remote was unreachable). [`evals/`](evals) holds
+touch your `~/.claude` or the network. Each plugin under `plugins/` keeps its
+own test suite, and CI runs every one. `sous marketplace-check` verifies that
+every in-repo plugin source has a `plugin.json` with the listed version, and
+that any git-pinned plugin ref resolves to its sha (exit 75: a remote was
+unreachable). [`evals/`](evals) holds
 `claude plugin eval` cases; they run real sessions, so CI skips them.
 
 [MIT licensed](LICENSE).
