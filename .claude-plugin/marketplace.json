@@ -15,7 +15,7 @@
       "name": "cited",
       "source": "./plugins/cited",
       "description": "Re-fetches every cited source and flags claims whose words, numbers or names are not on the page.",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "author": {
         "name": "Oren Segal"
       },
@@ -25,7 +25,7 @@
       "name": "scoped",
       "source": "./plugins/scoped",
       "description": "File claims between concurrent Claude Code sessions, enforced by a PreToolUse hook.",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "author": {
         "name": "Oren Segal"
       },
@@ -62,11 +62,11 @@
       "source": {
         "source": "github",
         "repo": "OrenSegal/blast-shield",
-        "ref": "v1.1.0",
-        "sha": "bda266f5fd7b05a1399bd44bb6fc37493921dcff"
+        "ref": "v1.1.1",
+        "sha": "27fa3c6ff68be97294c51fa0e01a732cfef9cc1d"
       },
       "description": "Mod: holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL), shows what they would change and whether it can be undone, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius, kept in its own repo; see its NOTICE.",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "license": "Apache-2.0"
     }
   ]
