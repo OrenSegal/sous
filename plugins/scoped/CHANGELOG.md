@@ -2,7 +2,7 @@
 
 ## v0.5.0
 
-- Runtime dependencies for the MCP server: `zod` 3 to 4 (`^4.6.5`) and `@modelcontextprotocol/sdk` `^1.12.0` to `^1.31.0`. The lockfile pins `zod` 4.6.7 and the SDK 1.32.2, which clears every `npm audit` finding, including advisories in the SDK's transitive dependencies (`body-parser`, `proxy-addr`, `hono`, `fast-uri`, `ip-address`). The MCP launcher installs these from the lockfile on first start, so existing installs fetch them once after updating.
+- Runtime dependencies for the MCP server: `zod` 3 to 4 (`^4.6.7`) and `@modelcontextprotocol/sdk` `^1.12.0` to `^1.32.2`. The lockfile also moves the SDK's transitive dependencies (`body-parser`, `proxy-addr`, `hono`, `fast-uri`, `ip-address`) past their advisories, so `npm audit` reports none. The MCP launcher installs these from the lockfile on first start, so existing installs fetch them once after updating.
 - Docs: README states the race-test result, and `docs/one-connection-cannot-test-a-race.md` explains why the race tests use separate OS processes.
 
 ## v0.4.1
