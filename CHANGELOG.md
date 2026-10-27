@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- cited, scoped, deuce and architecture-lint now live in this repo under `plugins/<name>`, imported with their full git history (`git subtree add`). The marketplace lists them as `./plugins/<name>` instead of pinned GitHub tags, so `<name>@sous` serves this repo's copy. Install commands are unchanged. architecture-lint is new to the marketplace (`architecture-lint@sous`, `/architecture-lint:setup`). CI runs each plugin's own suite from its folder.
-- blast-shield moved out to its own repo (OrenSegal/blast-shield, Apache-2.0) and `mods/blast-shield` is gone; the marketplace pins it at v1.1.0. `blast-shield@sous` still installs it.
+- cited (0.4.0, without the hosted web app), scoped (0.5.0), deuce and architecture-lint now live in this repo under `plugins/<name>`, imported with their full git history (`git subtree add`). The marketplace lists them as `./plugins/<name>` instead of pinned GitHub tags, so `<name>@sous` serves this repo's copy. Install commands are unchanged. architecture-lint is new to the marketplace (`architecture-lint@sous`, `/architecture-lint:setup`). CI runs each plugin's own suite from its folder.
+- blast-shield moved out to its own repo (OrenSegal/blast-shield, Apache-2.0) and `mods/blast-shield` is gone; the marketplace pins it at v1.1.1 (27fa3c6), the same version `mods/blast-shield` shipped. `blast-shield@sous` still installs it.
 - Guard, secrets check: `grep -q SETUP_COMPLETE=true ~/.config/last30days/.env` runs. It is the first-run check of the last30days skill, and `grep -q` prints no file content. Only that exact shape passes: plain `grep`, another key, a second file, `-f`, or a `cat` after it stay blocked.
 
 ## 0.3.1
