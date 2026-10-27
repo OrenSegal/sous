@@ -38,9 +38,8 @@ TIER_MEANING = {
     TIER_BROKEN: "The cited page could not be reached, live or archived.",
 }
 
-# Shared with the hosted pages (hosted/webapp.py), so a certificate and the
-# form that made it read as one product. Light and dark follow the reader's
-# system setting; tier colours keep one meaning in both.
+# Light and dark follow the reader's system setting; tier colours keep one
+# meaning in both.
 CSS = """
 :root{color-scheme:light dark;
 --bg:#f7f5f0;--fg:#1b1a16;--mut:#625c4c;--line:#e2ddd0;--card:#fffdf8;--sunk:#efece4;

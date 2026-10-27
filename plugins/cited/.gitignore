@@ -8,6 +8,3 @@ __pycache__/
 evals/results/
 .ruff_cache/
 
-# cited hosted: local certificate store
-hosted/.data/
-.vercel/

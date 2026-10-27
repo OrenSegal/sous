@@ -15,7 +15,7 @@
       "name": "cited",
       "source": "./plugins/cited",
       "description": "Re-fetches every cited source and flags claims whose words, numbers or names are not on the page.",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "author": {
         "name": "Oren Segal"
       },

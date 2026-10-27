@@ -38,6 +38,8 @@ This adds the `cited` skill, the `/cited:check` command, and puts `cited` on the
 
 Without Claude Code, clone [sous](https://github.com/OrenSegal/sous) and run `plugins/cited/bin/cited` (or `python3 skills/cited/scripts/verify_claims.py`). There is nothing to install.
 
+The hosted cited web app is not part of the plugin.
+
 ## Use
 
 In Claude Code, ask for it in plain words ("check the citations in report.md before I send it") and the skill takes over, or run the command:
