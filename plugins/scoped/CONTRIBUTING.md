@@ -1,8 +1,8 @@
 # Contributing
 
 ```bash
-git clone https://github.com/OrenSegal/scoped.git
-cd scoped
+git clone https://github.com/OrenSegal/sous.git
+cd sous/plugins/scoped
 npm install
 npm test
 ```

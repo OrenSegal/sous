@@ -6,7 +6,7 @@ In short: be respectful, assume good faith, criticize code and ideas rather than
 
 ## Reporting
 
-Report unacceptable behavior to the maintainer, [@OrenSegal](https://github.com/OrenSegal), through a [private advisory](https://github.com/OrenSegal/deuce/security/advisories/new). Reports are kept confidential.
+Report unacceptable behavior to the maintainer, [@OrenSegal](https://github.com/OrenSegal), through a [private advisory](https://github.com/OrenSegal/sous/security/advisories/new). Reports are kept confidential.
 
 ## Enforcement
 

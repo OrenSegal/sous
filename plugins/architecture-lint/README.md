@@ -1,6 +1,8 @@
 # architecture-lint
 
-[![CI](https://github.com/OrenSegal/architecture-lint/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/architecture-lint/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+[![CI](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+
+Part of [sous](https://github.com/OrenSegal/sous): tools for checking what coding agents actually do.
 
 A config-driven module-boundary linter with a ratchet baseline, extracted from
 patterns I use to keep a large Swift codebase (an iOS app in TestFlight beta)
@@ -131,6 +133,12 @@ violations grows.
 
 ## Using it in your own CI
 
+In Claude Code, `claude plugin marketplace add OrenSegal/sous` then
+`claude plugin install architecture-lint@sous` adds `/architecture-lint:setup`,
+which copies the script into your repo, proposes a `BOUNDARIES` list for you
+to confirm, and records the baseline. It does not run as a hook; the script
+in your repo and CI do the checking. By hand:
+
 There's no package to install. It needs `bash`, `grep` with `-E` and `\b`
 support (GNU and BSD grep both work), and `xargs`, so it should run on any
 Linux or macOS CI runner. I've only run it on GitHub Actions (`ubuntu-latest`)
@@ -162,7 +170,7 @@ version of. If you're evaluating whether to adopt it, curl the script to try
 it against a checkout without committing it yet:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OrenSegal/architecture-lint/main/architecture-lint.sh -o architecture-lint.sh
+curl -fsSL https://raw.githubusercontent.com/OrenSegal/sous/main/plugins/architecture-lint/architecture-lint.sh -o architecture-lint.sh
 chmod +x architecture-lint.sh
 ./architecture-lint.sh --init-baseline
 ```

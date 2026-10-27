@@ -1,6 +1,6 @@
 # cited
 
-[![CI](https://github.com/OrenSegal/cited/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/cited/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+[![CI](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
 Part of [sous](https://github.com/OrenSegal/sous): tools for checking what coding agents actually do.
 
@@ -30,13 +30,13 @@ Asking the model that wrote a claim how sure it is does not catch a claim it mad
 As a Claude Code plugin:
 
 ```text
-/plugin marketplace add OrenSegal/cited
-/plugin install cited@cited
+/plugin marketplace add OrenSegal/sous
+/plugin install cited@sous
 ```
 
 This adds the `cited` skill, the `/cited:check` command, and puts `cited` on the Bash tool's PATH while the plugin is enabled.
 
-Without Claude Code, clone the repo and run `bin/cited` (or `python3 skills/cited/scripts/verify_claims.py`). There is nothing to install.
+Without Claude Code, clone [sous](https://github.com/OrenSegal/sous) and run `plugins/cited/bin/cited` (or `python3 skills/cited/scripts/verify_claims.py`). There is nothing to install.
 
 ## Use
 

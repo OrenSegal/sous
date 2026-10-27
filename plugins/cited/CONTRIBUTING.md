@@ -3,8 +3,8 @@
 ## Setup
 
 ```bash
-git clone https://github.com/OrenSegal/cited.git
-cd cited
+git clone https://github.com/OrenSegal/sous.git
+cd sous/plugins/cited
 python3 -m pip install -r requirements-dev.txt   # pytest and ruff, for development only
 ```
 

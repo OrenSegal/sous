@@ -3,8 +3,8 @@
 ## Setup
 
 ```bash
-git clone https://github.com/OrenSegal/deuce.git
-cd deuce
+git clone https://github.com/OrenSegal/sous.git
+cd sous/plugins/deuce
 python3 -m pip install -r requirements-dev.txt   # pytest and ruff, for development only
 ```
 

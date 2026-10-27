@@ -1,6 +1,6 @@
 # deuce
 
-[![CI](https://github.com/OrenSegal/deuce/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/deuce/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
+[![CI](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-black)](LICENSE)
 
 Part of [sous](https://github.com/OrenSegal/sous): tools for checking what coding agents actually do.
 
@@ -43,13 +43,13 @@ The table shows one throwaway repository with a bare remote (git 2.54, with a fa
 As a Claude Code plugin:
 
 ```text
-/plugin marketplace add OrenSegal/deuce
-/plugin install deuce@deuce
+/plugin marketplace add OrenSegal/sous
+/plugin install deuce@sous
 ```
 
 This adds the `deuce` skill, the `/deuce:sweep` and `/deuce:status` commands, and puts `deuce` on the Bash tool's PATH while the plugin is enabled.
 
-Without Claude Code, clone the repo and run `bin/deuce` (or `python3 -m deuce` from the repo). There is nothing to install. `gh` is optional.
+Without Claude Code, clone [sous](https://github.com/OrenSegal/sous) and run `plugins/deuce/bin/deuce` (or `python3 -m deuce` from `plugins/deuce`). There is nothing to install. `gh` is optional.
 
 ## Use
 

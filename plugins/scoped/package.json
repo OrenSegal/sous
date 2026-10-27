@@ -5,11 +5,12 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OrenSegal/scoped.git"
+    "url": "git+https://github.com/OrenSegal/sous.git",
+    "directory": "plugins/scoped"
   },
-  "homepage": "https://github.com/OrenSegal/scoped#readme",
+  "homepage": "https://github.com/OrenSegal/sous/tree/main/plugins/scoped#readme",
   "bugs": {
-    "url": "https://github.com/OrenSegal/scoped/issues"
+    "url": "https://github.com/OrenSegal/sous/issues"
   },
   "bin": {
     "scoped": "./bin/scoped",

@@ -9,8 +9,8 @@ Nothing to install. The script only needs `bash`, `grep`, and `xargs` — all
 present on any standard Linux/macOS box. Clone the repo and you're ready:
 
 ```bash
-git clone https://github.com/OrenSegal/architecture-lint.git
-cd architecture-lint
+git clone https://github.com/OrenSegal/sous.git
+cd sous/plugins/architecture-lint
 ```
 
 ## Running the tests
