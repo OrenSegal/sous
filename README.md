@@ -35,8 +35,8 @@ different way an agent's work goes wrong, and each plugin installs on its own:
 | [architecture-lint](plugins/architecture-lint) | Imports that cross a module boundary your architecture forbids, ratcheted against a baseline count | `claude plugin install architecture-lint@sous` |
 
 Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
-Each plugin's folder has its own README and tests; the rest of this
-page documents `sous` itself.
+Each plugin under `plugins/` has its own README and tests; the rest of
+this page documents `sous` itself.
 
 ## sous
 
