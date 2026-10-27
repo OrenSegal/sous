@@ -142,7 +142,7 @@ report, because today you can only see it by running out of room.
 
 ### Two mods worth installing
 
-- **blast-shield** (`mods/blast-shield` here, `claude plugin install blast-shield@sous`).
+- **blast-shield** ([OrenSegal/blast-shield](https://github.com/OrenSegal/blast-shield), Apache-2.0, `claude plugin install blast-shield@sous`).
   Before a risky Bash command (recursive delete, `git reset --hard`, force push,
   `kubectl delete`, SQL wipes) it dry-runs what would be touched and asks
   Proceed or Cancel. It complements `sous-guard`: the guard refuses outright,

@@ -1,0 +1,9 @@
+target-version = "py310"
+line-length = 140
+extend-exclude = ["evals/results"]
+
+[lint]
+select = ["E", "F", "W", "I", "B"]
+
+[lint.isort]
+known-first-party = ["certificate", "conftest", "extract", "fetcher", "htmldraft", "page_text", "safe_fetch", "storage", "recheck", "tiering_core", "verify_claims", "webapp"]

@@ -1,0 +1,14 @@
+{
+  "name": "deuce",
+  "owner": { "name": "Oren Segal" },
+  "description": "Marketplace for the deuce plugin: cleans up worktrees and branches after they merge.",
+  "plugins": [
+    {
+      "name": "deuce",
+      "source": "./",
+      "description": "Cleans up merged branches: worktree, local branch and remote branch, after a dry run.",
+      "version": "0.1.1",
+      "license": "MIT"
+    }
+  ]
+}

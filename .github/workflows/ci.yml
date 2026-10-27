@@ -53,12 +53,54 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           npm install -g @anthropic-ai/claude-code >/dev/null
-          for t in . .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents skills mods/handoff mods/blast-shield; do
+          for t in . .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents skills mods/handoff plugins/*/; do
             claude plugin validate "$t" --strict
           done
           claude plugin test mods/handoff
-          claude plugin test mods/blast-shield
-          node mods/blast-shield/test/verify.mjs
+
+  # Each plugin under plugins/ keeps its own suite, run from its own folder as in its old repo.
+  plugins:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin: cited
+            os: ubuntu-latest
+            setup: python -m pip install -r requirements-dev.txt
+            test: ruff check . && shellcheck bin/cited && python -m pytest tests -v
+          - plugin: deuce
+            os: ubuntu-latest
+            setup: python -m pip install -r requirements-dev.txt
+            test: ruff check . && shellcheck bin/deuce evals/*/setup.sh && python -m pytest tests -v
+          - plugin: scoped
+            os: ubuntu-latest
+            setup: npm ci
+            test: npm test
+          - plugin: scoped
+            os: macos-latest
+            setup: npm ci
+            test: npm test
+          - plugin: architecture-lint
+            os: ubuntu-latest
+            setup: "true"
+            test: ./tests/run.sh && shellcheck architecture-lint.sh tests/run.sh
+    name: plugins/${{ matrix.plugin }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: plugins/${{ matrix.plugin }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+      - name: setup
+        run: ${{ matrix.setup }}
+      - name: test
+        run: ${{ matrix.test }}
 
   marketplace:
     runs-on: ubuntu-latest

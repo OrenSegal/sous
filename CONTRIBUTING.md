@@ -33,6 +33,15 @@ claude plugin validate . --strict
 claude plugin eval . --allow-tools Bash --runs 3   # optional: real sessions, costs money; CI skips it
 ```
 
+The plugins under `plugins/` keep their own suites and their own CONTRIBUTING.md; run them from the plugin's folder (CI's `plugins` job does the same):
+
+```bash
+(cd plugins/cited && python3 -m pytest tests)
+(cd plugins/deuce && python3 -m pytest tests)
+(cd plugins/scoped && npm ci && npm test)
+(cd plugins/architecture-lint && ./tests/run.sh)
+```
+
 On macOS, also run the table suites under `/bin/bash` (3.2). The guard
 must work there, so avoid bash 4+ features such as `${var,,}`, `mapfile` and
 associative arrays. CI runs bash 5 on Linux and 3.2 on macOS.
