@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.1
+
+- A `claim` on a file the same session already holds moves it to the new issue, so `release` of that issue frees it. Before, after a hook claim, `claim(ENG-1)` then `release(ENG-1)` freed nothing. The hook's own re-claim on the next edit leaves the issue alone.
+- A multi-file `claim` is all or nothing: if another session holds any file, none are claimed.
+- New `SessionEnd` hook releases that session's claims. Clone installs: re-run `npm run setup`, or `scoped doctor` reports it as not registered.
+
 ## v0.5.0
 
 - Runtime dependencies for the MCP server: `zod` 3 to 4 (`^4.6.7`) and `@modelcontextprotocol/sdk` `^1.12.0` to `^1.32.2`. The lockfile also moves the SDK's transitive dependencies (`body-parser`, `proxy-addr`, `hono`, `fast-uri`, `ip-address`) past their advisories, so `npm audit` reports none. The MCP launcher installs these from the lockfile on first start, so existing installs fetch them once after updating.

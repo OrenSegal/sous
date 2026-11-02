@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+### Changed
+
+- A worktree with ignored files is no longer removed by default, because `deuce undo` can't restore them. The branch is kept (rule `ignored-files`) and the reason names the files. `sweep --delete-ignored` restores the old behaviour.
+- The force delete no longer trusts `gh` alone. The remote branch must be at the tip, or base must already hold the tip's changes. Otherwise the branch is refused as `safe-delete`.
+
 ## 0.1.1
 
 ### Fixed

@@ -26,9 +26,10 @@ other:
    the script, not hardcoded logic. There are no per-file annotations. Each
    module is a directory under `MODULES_ROOT`, and a violation is any line in
    that directory containing the import keyword followed somewhere by the
-   forbidden module name as a whole word. It's a grep, not a parser, so it
-   works for languages where an import fits on one line. See "Languages"
-   below for what I've actually tested.
+   forbidden module name as a whole word, minus lines that start as comments
+   and paths inside a package (`some-pkg/UI`). It's a grep, not a parser, so
+   it works for languages where the module name shares a line with a keyword.
+   See "Languages" below for what I've actually tested.
 
 2. **Ratchet baseline, not a hard gate.** Introducing a lint rule into a
    codebase that already has debt usually means either a giant one-time
@@ -65,17 +66,26 @@ array) can be overridden with `ARCH_LINT_MODULES_ROOT`,
 `ARCH_LINT_FILE_GLOB` and `ARCH_LINT_IMPORT_KEYWORD`, and the baseline path
 with `ARCH_LINT_BASELINE_FILE`. `tests/run.sh` uses these to run the same
 script against TypeScript and Swift fixtures without editing the file.
+`FILE_GLOB` is a space-separated list and defaults to `*.ts *.tsx`.
 
 `MODULES_ROOT` is resolved from the directory you run the script in, so run
 it from the repo root. If that directory doesn't exist, the script exits 1
-instead of reporting a clean run with zero checks.
+instead of reporting a clean run with zero checks. A baseline it can't read
+a number from, or a `grep` error such as an invalid `IMPORT_KEYWORD`, also
+exits 1.
+
+The default matching now also counts `.tsx`, `export ... from`, `require(...)`
+and the last line of a multi-line import, so counts can rise when you upgrade.
+Fix the new violations, or re-run `--init-baseline` to record them.
 
 ## Languages
 
 Tested, with fixtures in `tests/`:
 
-- **TypeScript** (`*.ts`, the default): `import { x } from '../UI/Screen'`
-  is caught because `UI` appears as a word in the path.
+- **TypeScript** (`*.ts` and `*.tsx`, the default): `import { x } from
+  '../UI/Screen'` is caught because `UI` appears as a word in the path. So are
+  `export * from '../UI/Screen'`, `require('../UI/Screen')` and an import over
+  several lines, which counts once, on its `from` line.
 - **Swift** (`*.swift`): `import UI` is caught, and `import CoreData` is not
   mistaken for the `Data` module.
 
@@ -90,8 +100,8 @@ cases I'd expect to hit:
   keyword, so they're missed.
 
 Since matching is line-based text search, any line with the keyword and the
-module name as a word counts, including comments or an imported symbol that
-happens to share a module's name.
+module name as a word counts, including an imported symbol that happens to
+share a module's name. Lines that start as comments don't count.
 
 ## Real output
 
@@ -139,9 +149,9 @@ which copies the script into your repo, proposes a `BOUNDARIES` list for you
 to confirm, and records the baseline. It does not run as a hook; the script
 in your repo and CI do the checking. By hand:
 
-There's no package to install. It needs `bash`, `grep` with `-E` and `\b`
-support (GNU and BSD grep both work), and `xargs`, so it should run on any
-Linux or macOS CI runner. I've only run it on GitHub Actions (`ubuntu-latest`)
+There's no package to install. It needs `bash` 3.2 or later, `grep` with
+`-E` and `\b` support (GNU and BSD grep both work), `sed -E` and `awk`, so it
+should run on any Linux or macOS CI runner. I've only run it on GitHub Actions (`ubuntu-latest`)
 and locally on macOS. Copy `architecture-lint.sh` into your repo
 (alongside a `.arch_lint_baseline.json` from `--init-baseline`), edit the
 `BOUNDARIES` array for your module graph, commit both, and gate CI on it:
@@ -181,8 +191,8 @@ chmod +x architecture-lint.sh
 ./tests/run.sh
 ```
 
-Thirteen fixture-backed cases, each running the real script and asserting
-its exit code (one also checks for a warning message). No mocking:
+Fixture-backed cases, each running the real script and asserting its exit
+code (three also check its output). No mocking:
 
 - a clean module graph passes
 - a boundary violation (`Domain` importing `UI`) fails against a zero baseline
@@ -199,6 +209,11 @@ its exit code (one also checks for a warning message). No mocking:
   instead of crashing
 - a modules root that doesn't exist exits 1, both on a normal run and on
   `--init-baseline`
+- a one-line baseline is read per key, and still fails a regression
+- a malformed baseline or an invalid import regex exits 1
+- `.tsx`, `export ... from`, `require(...)` and multi-line imports are counted
+- comments, package paths (`some-pkg/UI`), hyphenated names and plain exports
+  are not
 
 CI runs this suite, plus ShellCheck against the shell scripts, on every push
 to `main` and on pull requests (see the badge above).
@@ -208,7 +223,8 @@ to `main` and on pull requests (see the badge above).
 The details are in the sections above; in one place:
 
 - **The baseline counts, it doesn't remember.** Fixing one old violation and adding a new one in the same change nets to zero and passes. Anyone can re-run `--init-baseline` to raise the number. Code review has to catch both.
-- **It's a grep, not a parser.** A comment, a string, or a symbol that shares a module's name counts as a violation. Multi-line imports (Go's grouped `import ( ... )`) are missed.
+- **It's a grep, not a parser.** A trailing comment, the inside of a block comment on a line with no leading `*`, a string, or a symbol that shares a module's name counts as a violation. Multi-line forms whose module name isn't on a `from '...'` line are missed: Go's grouped `import ( ... )`, Python's parenthesised imports, and `require(` or `import(` with the path on the next line.
+- **A bare path is read as a package.** `some-pkg/UI` isn't a violation, and neither is a real alias written the same way (`app/UI/x`), unless it starts with the modules root's name (`src/UI/x`). `@scope/UI` is always a violation, even when it is a real package.
 - **Only TypeScript and Swift are tested.** Python needs a different `IMPORT_KEYWORD`; Go works for single-line imports only.
 - **`no_singletons` is Swift-only** unless you edit its regex.
 - **Boundary violations have no inline exemption.** The baseline is the only way to let one through.

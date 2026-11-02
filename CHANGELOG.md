@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - cited (0.4.0, without the hosted web app), scoped (0.5.0), deuce and architecture-lint now live in this repo under `plugins/<name>`, imported with their full git history (`git subtree add`). The marketplace lists them as `./plugins/<name>` instead of pinned GitHub tags, so `<name>@sous` serves this repo's copy. Install commands are unchanged. architecture-lint is new to the marketplace (`architecture-lint@sous`, `/architecture-lint:setup`). CI runs each plugin's own suite from its folder.
-- blast-shield moved out to its own repo (OrenSegal/blast-shield, Apache-2.0) and `mods/blast-shield` is gone; the marketplace pins it at v1.1.1 (27fa3c6), the same version `mods/blast-shield` shipped. `blast-shield@sous` still installs it.
+- blast-shield moved out to its own repo (OrenSegal/blast-shield, Apache-2.0) and `mods/blast-shield` is gone; the marketplace pins it at v1.2.0 (7510801), the same version `mods/blast-shield` shipped. `blast-shield@sous` still installs it.
 - Guard, hang: bash 3.2 spent minutes on some long commands (over 30s at 8KB of repeated paths), and a killed hook left its `$(...)` child running. The rule loops are now linear, with limits: over 64KB, over 32KB outside heredoc bodies, over 512 matches or over 2048 commands on a line, the guard blocks. The hook sets `timeout: 30` and `onFailure: "block"`, since Claude Code lets a command through when a hook times out.
 - Guard, delete: flags after operands (`rm x -rf`, `git clean x -f`), `git clean` with `clean.requireForce` off through `-c`, a quoted or escaped `;` in `find` and `rsync` arguments, `rsync --del` and its abbreviations. New rule: `git reset --hard`.
 - Guard, secrets: brace expansion (`.e{nv,}`), any `.ssh`, `.aws`, `.gnupg` path including relative ones and bare names (`tar -C ~ .ssh`), `.kube`, `.netrc`, `gh auth token`, and more patch-printing spellings of `git log` and `git reflog` (`-U3`, `--unified`, `--word-diff`). A recursive read stays allowed; SECURITY.md says why.
@@ -11,6 +11,8 @@
 - `tests-weakened` also flags a loosened assertion, a test commented out, a `return` above an assertion, a dummy body, an assertion on two constants, a test moved out of its directory, and an ignore added to test config.
 - `tests-ran` reads Mocha, node:test, `go test` and sous's own suite summaries.
 - Guard, secrets check: `grep -q SETUP_COMPLETE=true ~/.config/last30days/.env` runs. It is the first-run check of the last30days skill, and `grep -q` prints no file content. Only that exact shape passes: plain `grep`, another key, a second file, `-f`, or a `cat` after it stay blocked.
+- The plugins carry the audit fixes: cited 0.4.1 (numbers checked against nearby words), scoped 0.5.1 (re-claim, atomic multi-file claims, `SessionEnd` release), deuce 0.1.2 (keeps worktrees holding ignored files, stricter force delete), architecture-lint 1.2.0 (per-key baseline, more import forms; counts may rise).
+- `tests-ran` counts `node:test` logs when `awk` treats the reporter marker as a letter, as `gawk` does in a UTF-8 locale.
 
 ## 0.3.1
 
