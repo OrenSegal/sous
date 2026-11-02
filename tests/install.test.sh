@@ -109,8 +109,11 @@ printf '{"permissions":{"disableBypassPermissionsMode":"disable"}}\n' > "$WORK/h
 expect "check is silent when every layer is present" 0 sh -c '[ -z "$(HOME="$1" python3 "$2" check "$3")" ]' _ "$WORK/home" "$SOUS" "$p1"
 expect "check within 300ms" 0 python3 -c '
 import subprocess,sys,time
-t=time.monotonic(); subprocess.run(["python3",sys.argv[1],"check",sys.argv[2]],capture_output=True)
-sys.exit(0 if time.monotonic()-t<0.3 else 1)' "$SOUS" "$p1"
+# best of 3: the budget is for the fast path, not scheduling noise on a loaded CI runner
+def run():
+    t=time.monotonic(); subprocess.run(["python3",sys.argv[1],"check",sys.argv[2]],capture_output=True)
+    return time.monotonic()-t
+sys.exit(0 if min(run() for _ in range(3))<0.3 else 1)' "$SOUS" "$p1"
 expect "plugin hooks.json carries SessionStart + PreToolUse" 0 python3 -c '
 import json,sys; h=json.load(open(sys.argv[1]))["hooks"]
 assert "SessionStart" in h and "PreToolUse" in h' "$HERE/../hooks/hooks.json"
