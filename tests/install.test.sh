@@ -103,7 +103,7 @@ expect "report counts reasons" 0 sh -c 'python3 "$1" report | grep -q "2  force 
 # SessionStart fast path: speaks only when a layer is missing, never fails.
 # HOME is faked so the real ~/.claude/settings.json is not under test.
 mkdir -p "$WORK/home/.claude"
-expect "check on a bare project speaks" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "Run `sous install`"' _ "$WORK/home" "$SOUS" "$WORK/bare"
+expect "check on a bare project speaks" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "Run .sous install."' _ "$WORK/home" "$SOUS" "$WORK/bare"
 expect "check flags bypass mode when installed" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "bypass mode still allowed"' _ "$WORK/home" "$SOUS" "$p1"
 printf '{"permissions":{"disableBypassPermissionsMode":"disable"}}\n' > "$WORK/home/.claude/settings.json"
 expect "check is silent when every layer is present" 0 sh -c '[ -z "$(HOME="$1" python3 "$2" check "$3")" ]' _ "$WORK/home" "$SOUS" "$p1"
@@ -322,7 +322,7 @@ pl="$WORK/lint"; mkdir -p "$pl"
 python3 "$SOUS" install "$pl" >/dev/null
 cat > "$pl/CLAUDE.md" <<'MD'
 # Rules
-- Never run `git reset --hard`; use `git stash` instead.
+- Never run `git stash clear`; use `git stash` instead.
 - Do not edit `config/prod.yml` or read `.env`.
 - Never skip the tests.
 - Do not use `git stash drop`, use `git stash pop` for that.
@@ -336,7 +336,7 @@ MD
 python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["permissions"]["deny"].append("Read(docs/frozen.md)"); json.dump(d,open(p,"w"))' "$pl/.claude/settings.json"
 cp "$pl/.claude/settings.json" "$WORK/lint-before.json"
 expect "lint reports and exits 0" 0 python3 "$SOUS" lint "$pl"
-expect "lint names the unenforced command" 0 sh -c 'python3 "$1" lint "$2" | grep -q "git reset --hard"' _ "$SOUS" "$pl"
+expect "lint names the unenforced command" 0 sh -c 'python3 "$1" lint "$2" | grep -q "git stash clear"' _ "$SOUS" "$pl"
 expect "lint names the unenforced path" 0 sh -c 'python3 "$1" lint "$2" | grep -q "config/prod.yml"' _ "$SOUS" "$pl"
 expect "lint skips fenced blocks" 1 sh -c 'python3 "$1" lint "$2" | grep -q "ignored in fence"' _ "$SOUS" "$pl"
 expect "lint: the alternative after a comma is not prohibited" 1 sh -c 'python3 "$1" lint "$2" | grep -q "git stash pop"' _ "$SOUS" "$pl"
@@ -349,7 +349,7 @@ expect "dry run left settings alone" 0 cmp "$WORK/lint-before.json" "$pl/.claude
 expect "lint --fix" 0 python3 "$SOUS" lint "$pl" --fix
 expect "fix added deny rules" 0 python3 -c '
 import json,sys; d=json.load(open(sys.argv[1]))["permissions"]["deny"]
-assert any("git reset --hard" in r for r in d), d
+assert any("git stash clear" in r for r in d), d
 assert any("config/prod.yml" in r for r in d), d' "$pl/.claude/settings.json"
 expect "lint after fix: nothing left to fix" 1 sh -c 'python3 "$1" lint "$2" | grep -q "would add"' _ "$SOUS" "$pl"
 expect "doctor passes after lint --fix" 0 python3 "$SOUS" doctor "$pl"

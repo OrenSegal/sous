@@ -162,6 +162,114 @@ Test Suites: 1 skipped, 0 of 1 total
 Tests:       3 skipped, 3 total
 LOG
 
+# --- Mocha ------------------------------------------------------------------
+check 3 0 'mocha: three passing' <<'LOG'
+  cart
+    ✓ totals
+
+  3 passing (12ms)
+LOG
+check 3 0 'mocha: passing + failing, pending left out' <<'LOG'
+  2 passing (12ms)
+  4 pending
+  1 failing
+
+  1) cart totals:
+LOG
+check 0 1 'mocha: zero passing' <<'LOG'
+  0 passing (1ms)
+LOG
+check 0 1 'mocha: all pending' <<'LOG'
+  0 passing (1ms)
+  3 pending
+LOG
+
+# --- node:test ---------------------------------------------------------------
+check 5 0 'node:test spec reporter' <<'LOG'
+ℹ tests 6
+ℹ suites 1
+ℹ pass 4
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 41.2
+LOG
+check 3 0 'node:test TAP reporter' <<'LOG'
+TAP version 13
+ok 1 - a
+ok 2 - b
+ok 3 - c
+1..3
+# tests 3
+# suites 0
+# pass 3
+# fail 0
+# skipped 0
+LOG
+check 0 1 'node:test: no tests' <<'LOG'
+ℹ tests 0
+ℹ suites 0
+ℹ pass 0
+ℹ fail 0
+ℹ duration_ms 3.1
+LOG
+check 0 1 'node:test: all skipped' <<'LOG'
+ℹ tests 2
+ℹ pass 0
+ℹ fail 0
+ℹ skipped 2
+LOG
+
+# --- go test -----------------------------------------------------------------
+check 3 0 'go -v: pass and fail lines, subtests left out' <<'LOG'
+=== RUN   TestA
+--- PASS: TestA (0.00s)
+=== RUN   TestB
+=== RUN   TestB/sub
+--- FAIL: TestB (0.00s)
+    --- FAIL: TestB/sub (0.00s)
+=== RUN   TestC
+--- PASS: TestC (0.00s)
+=== RUN   TestD
+--- SKIP: TestD (0.00s)
+FAIL
+FAIL	example.com/cart	0.004s
+LOG
+# Without -v go prints a line per package, so the count is packages: at least that many tests.
+check 2 0 'go: package lines only' <<'LOG'
+ok  	example.com/cart	0.004s
+ok  	example.com/shop	(cached)
+?   	example.com/cmd	[no test files]
+LOG
+check 0 1 'go: filter matched nothing' <<'LOG'
+ok  	example.com/cart	0.004s [no tests to run]
+LOG
+check 0 1 'go: no test files' <<'LOG'
+?   	example.com/cmd	[no test files]
+LOG
+check 0 1 'go: build failed' <<'LOG'
+FAIL	example.com/cart [build failed]
+LOG
+
+# --- sous's own suites -------------------------------------------------------
+check 66 0 'sous: bare summary' <<'LOG'
+66 passed, 0 failed
+LOG
+check 52 0 'sous: named summary' <<'LOG'
+rules: 52 passed, 0 failed
+LOG
+check 3 0 'sous: failures count as executed' <<'LOG'
+FAIL want=2 got=0 :: something
+ssot: 2 passed, 1 failed
+LOG
+check 0 1 'sous: zero' <<'LOG'
+lib: 0 passed, 0 failed
+LOG
+check 0 1 'prose with the same words is not a summary' <<'LOG'
+Of the plan, 3 passed, 1 failed review
+LOG
+
 # --- Not a test log ---------------------------------------------------------
 check 0 1 'empty log' </dev/null
 check 0 1 'build output that mentions tests in prose' <<'LOG'

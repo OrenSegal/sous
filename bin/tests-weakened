@@ -18,7 +18,18 @@
 #   skipped    a skip / disable / .only marker added (pytest, unittest, jest,
 #              vitest, XCTest, Swift Testing, Go, JUnit, Rust #[ignore])
 #   fewer      more assertion lines removed than added in one file
-#   trivial    an assertion that can't fail added (assert True, expect(true))
+#   loosened   an exact assertion dropped and a weaker one added in the same file
+#              (== 42 to is not None or >= 0, toBe to toBeDefined)
+#   commented  a removed test or assertion is back as a comment
+#   unreachable a bare return added above an assertion in the same block
+#   dummy      a test body replaced by pass or {}, or a new empty one-line test
+#   trivial    an assertion that can't fail added (assert True, expect(true),
+#              assert 2 + 2 == 4, assertEqual(3, 3))
+#   moved      a test renamed out of its test directory, unless the new name
+#              still says it is a test (a.test.ts, x_test.go)
+#   ignored    an ignore or deselect added to test config (pytest.ini, tox.ini,
+#              setup.cfg, pyproject.toml, conftest.py, package.json, .mocharc,
+#              jest/vitest/playwright/mocha/cypress/ava config)
 #
 # Exit: 0 nothing flagged, 1 flagged, 2 usage error (no repo, unknown ref).
 # Runs on bash 3.2.
@@ -28,6 +39,29 @@ tests_weakened_scan() { # reads a unified diff on stdin, prints one finding per 
     function is_test(p) {
       return p ~ /(^|\/)(tests?|spec|__tests__)\// || p ~ /(_test|\.test|\.spec)\.[A-Za-z0-9]+$/ ||
              p ~ /(^|\/)test_[^\/]*$/ || p ~ /Tests?\.swift$/
+    }
+    function in_test_dir(p) { return p ~ /(^|\/)(tests?|spec|__tests__)\// }
+    function is_config(p) {
+      return p ~ /(^|\/)(pytest\.ini|tox\.ini|setup\.cfg|pyproject\.toml|conftest\.py|package\.json|\.mocharc[^\/]*)$/ ||
+             p ~ /(^|\/)(jest|vitest|playwright|mocha|cypress|ava)\.config\.[A-Za-z]+$/
+    }
+    # shebangs and Swift or Rust attributes start with # too; they are code.
+    function is_comment(l) {
+      if (l ~ /^[[:space:]]*#(\[|!|expect|require|if|else|endif|include|define|available|warning|error)/) return 0
+      return l ~ /^[[:space:]]*(\/\/|#)/
+    }
+    function trim(l) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", l); return l }
+    function indent(l) { match(l, /^[[:space:]]*/); return RLENGTH }
+    # An added line with an open bare return: an assertion under it at the same
+    # indent can never run. A shallower line ends the block, so a return inside
+    # an `if` is not flagged.
+    function after_return(l) {
+      if (!ret_open || trim(l) == "" || is_comment(l)) return
+      if (indent(l) < ret_indent) { ret_open = 0; return }
+      if (indent(l) == ret_indent && l ~ assert_re) {
+        print "unreachable: " file ": return added above " trim(l)
+        ret_open = 0
+      }
     }
     function test_name(line,    t, m) {
       t = line
@@ -52,38 +86,84 @@ tests_weakened_scan() { # reads a unified diff on stdin, prints one finding per 
       }
       if (rem_assert > add_assert)
         print "fewer: " file ": " rem_assert + 0 " assertion line(s) removed, " add_assert + 0 " added"
-      delete removed; delete added; rem_assert = 0; add_assert = 0
+      if (rem_exact > add_exact && weak != "") printf "%s", weak
+      for (k in commented) if ((k in rem_line) && (test_name(k) != "" || k ~ assert_re))
+        print "commented: " file ": " k
+      delete removed; delete added; delete commented; delete rem_line
+      rem_assert = 0; add_assert = 0; rem_exact = 0; add_exact = 0; weak = ""
     }
     BEGIN {
       skip_re = "(@pytest\\.mark\\.(skip|xfail)|@unittest\\.skip|pytest\\.(skip|xfail)\\(|(^|[^A-Za-z0-9_])(xit|xdescribe|xtest|fit|fdescribe)\\(|\\.(skip|only|todo)\\(|XCTSkip|\\.disabled\\(|@Disabled|t\\.Skip\\(|#\\[ignore\\]|\\[Ignore\\]|@Ignore|pending\\()"
       # require. is testify; require( is a JS import, not an assertion.
       assert_re = "(^|[^A-Za-z0-9_])(assert[A-Za-z_]*|expect|XCTAssert[A-Za-z]*|EXPECT_[A-Z_]+|ASSERT_[A-Z_]+)[[:space:](.!]|(^|[^A-Za-z0-9_])require\\.|#expect|#require|\\.should|t\\.(Error|Fatal)f?\\(|assert!|assert_eq!"
       trivial_re = "(assert[[:space:](]+True([[:space:])]|$)|assertTrue\\(True\\)|expect\\(true\\)\\.toBe\\(true\\)|expect\\(1\\)\\.toBe\\(1\\)|XCTAssertTrue\\(true\\)|assert[[:space:](]+1[[:space:]]*==[[:space:]]*1|#expect\\(true\\))"
+      # Both sides literal: nothing under test appears in the assertion.
+      const = "([0-9][0-9 +*\\/.-]*|\"[^\"]*\"|\x27[^\x27]*\x27)"
+      const_re = "assert[[:space:](]+" const "[[:space:]]*==[[:space:]]*" const "[[:space:])]*$|(assertEqual|XCTAssertEqual|assert_eq!)\\(" const ",[[:space:]]*" const "\\)|expect\\(" const "\\)\\.(toBe|toEqual|toStrictEqual)\\(" const "\\)"
+      exact_re = "assert[[:space:](].*==|assert(Equal|Equals|StrictEqual)\\(|assert\\.(equal|Equal|strictEqual|deepEqual)\\(|\\.(toBe|toEqual|toStrictEqual)\\(|XCTAssertEqual|EXPECT_EQ|ASSERT_EQ|assert_eq!|require\\.Equal|#expect\\(.*=="
+      weak_re = "is not None|!=[[:space:]]*None|toBeDefined|toBeTruthy|not\\.(toBeNull|toBeUndefined)|toBeGreaterThan|toBeLessThan|toContain|toMatch|assertIsNotNone|assertTrue\\(|assertIn\\(|XCTAssertNotNil|XCTAssertTrue|\\.NotNil\\(|\\.NotEmpty\\(|\\.True\\(|assert[[:space:](][^=]*[<>]|^[[:space:]]*assert[[:space:]]+[^=<>!]*$"
+      ignore_re = "--ignore|--deselect|collect_ignore|norecursedirs|[tT]estPathIgnore|testIgnore|modulePathIgnore|--exclude|exclude[[:space:]]*:|addopts.*[[:space:]]-[km][[:space:]]"
+      empty_body_re = "^[[:space:]]*(pass|\\.\\.\\.|\\}\\)?;?)[[:space:]]*$"
+      empty_test_re = ":[[:space:]]*(pass|\\.\\.\\.)[[:space:]]*$|\\{[[:space:]]*\\}\\)?;?[[:space:]]*$"
     }
-    /^diff --git / { flush(); file = ""; intest = 0; next }
+    /^diff --git / { flush(); file = ""; intest = 0; inconfig = 0; ret_open = 0; next }
+    /^rename from / { ren_from = substr($0, 13); next }
+    /^rename to / {
+      p = substr($0, 11)
+      if (in_test_dir(ren_from) && !in_test_dir(p) && p !~ /(_test|\.test|\.spec)\.[A-Za-z0-9]+$/ ||
+          is_test(ren_from) && !is_test(p))
+        print "moved: " ren_from " to " p ": out of where the test runner looks"
+      next
+    }
     /^deleted file mode/ { gone = 1; next }
     /^\+\+\+ / {
       p = $2; sub(/^b\//, "", p)
       if (p == "/dev/null") { p = prev }
-      file = p; intest = is_test(file)
+      file = p; intest = is_test(file); inconfig = is_config(file)
       if (gone && intest) print "deleted: " file ": test file removed"
       gone = 0; next
     }
     /^--- / { prev = $2; sub(/^a\//, "", prev); next }
-    !intest { next }
+    !intest && !inconfig { next }
+    /^@@/ { ret_open = 0; hunk_removed = 0; after_def = 0; next }
     /^-/ {
+      if (!intest) next
       line = substr($0, 2)
+      if (is_comment(line) || trim(line) == "") next
+      hunk_removed++
+      rem_line[trim(line)] = 1
       n = test_name(line); if (n != "") removed[n] = 1
       if (line ~ assert_re) rem_assert++
+      if (line ~ exact_re) rem_exact++
       next
     }
     /^\+/ {
       line = substr($0, 2)
+      if (inconfig && line ~ ignore_re) print "ignored: " file ": " line
+      if (!intest) next
+      if (is_comment(line)) {
+        c = line; sub(/^[[:space:]]*(\/\/|#)[[:space:]]?/, "", c)
+        commented[trim(c)] = 1
+        next
+      }
+      after_return(line)
       n = test_name(line); if (n != "") added[n] = 1
       if (line ~ assert_re) add_assert++
+      if (line ~ exact_re) add_exact++
+      else if (line ~ assert_re && line ~ weak_re) weak = weak "loosened: " file ": " line "\n"
       if (line ~ skip_re) print "skipped: " file ": " line
-      if (line ~ trivial_re) print "trivial: " file ": " line
+      if (line ~ trivial_re || line ~ const_re) print "trivial: " file ": " line
+      if (n != "" && line ~ empty_test_re) print "dummy: " file ": " line
+      else if (after_def && hunk_removed > 0 && line ~ empty_body_re) print "dummy: " file ": test body replaced by " trim(line)
+      if (line ~ /^[[:space:]]*return;?[[:space:]]*$/) { ret_open = 1; ret_indent = indent(line) }
+      if (trim(line) != "") after_def = (n != "")
       next
+    }
+    /^ / {
+      if (!intest) next
+      line = substr($0, 2)
+      after_return(line)
+      if (trim(line) != "") after_def = (test_name(line) != "")
     }
     END { flush() }
   ' | sed 's/[[:space:]]\{1,\}/ /g'
@@ -92,7 +172,7 @@ tests_weakened_scan() { # reads a unified diff on stdin, prints one finding per 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -uo pipefail
   case "${1:-}" in
-    -h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   esac
   if [ "${1:-}" = - ]; then
     findings=$(tests_weakened_scan)

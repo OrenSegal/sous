@@ -24,8 +24,9 @@ fail=0
 
 run() { # stdin payload -> exit code
   # alarm: a hook that hangs stalls every Bash call in the session, so a hang fails here.
+  # 15s: 5s flakes on a loaded machine; the scale rows below time themselves more tightly.
   # $BASH: the hook runs on the bash running this file, so `/bin/bash x.test.sh` tests 3.2.
-  (cd "$SANDBOX_DIR" && CLAUDE_TOOL_INPUT='' perl -e 'alarm 5; exec @ARGV' "$BASH" "$HOOK" >/dev/null 2>&1)
+  (cd "$SANDBOX_DIR" && CLAUDE_TOOL_INPUT='' perl -e 'alarm 15; exec @ARGV' "$BASH" "$HOOK" >/dev/null 2>&1)
 }
 check() { # $1 want, $2 command text
   local got
@@ -358,6 +359,109 @@ check 0 'sous doctor'
 check 0 'git log --grep="sous accept"'
 check 0 $'git commit -m "$(cat <<\'EOF\'\nrun sous accept after review\nEOF\n)"'
 
+# --- audit 2026-11: flags after operands, other spellings of the same delete
+check 2 'rm x -rf'
+check 2 'rm x -r -f'
+check 2 'rm -r x -f'
+check 2 '/bin/rm a b --recursive --force'
+check 0 'rm x -f'
+check 0 'rm x -r'
+check 0 'docker rm x -f'
+check 0 'docker run --rm -v a:b img -f x -r y'
+check 2 "find x -name ';' -delete"
+check 2 'find x -name "a|b" -delete'
+check 2 'find x -exec true {} \; -delete'
+check 2 "sh -c \"find x -name ';' -delete\""
+check 0 "find x -name ';' -print"
+check 0 'find . -print; echo -delete'
+check 2 'rsync -a --del src/ dst/'
+check 2 'rsync -a --dele src/ dst/'
+check 2 'rsync -a --delete-after src/ dst/'
+check 2 "rsync -e 'ssh -o a;b' --del src/ dst/"
+check 0 'rsync -a --delay-updates src/ dst/'
+check 0 'rsync -a src/ dst/; echo --del'
+check 2 'git -c clean.requireForce=false clean -d'
+check 2 'git -c clean.requireforce=0 clean'
+check 2 'git clean x -f'
+check 0 'git -c clean.requireForce=false clean -n'
+check 0 'git -c clean.requireForce=true clean -d'
+check 0 'git clean -d'
+check 0 'git log --grep cleanup'
+check 2 'git reset --hard'
+check 2 'git reset --hard HEAD~1'
+check 2 'git -C . reset HEAD~1 --hard'
+check 2 "git -c alias.x='reset --hard' x"
+check 0 'git reset --soft HEAD~1'
+check 0 'git reset HEAD file.txt'
+check 0 'git commit -m "drop git reset --hard from the docs"'
+
+# --- audit 2026-11: secrets by brace, relative path, other credential files
+check 2 'cat .e{nv,}'
+check 2 'cat .{env,x}'
+check 2 'cat .e{n,x}v'
+check 2 'cat .{d..f}nv'
+check 2 'cat ~/.{ssh,x}/id_rsa'
+check 0 'cat .e{slintrc,ditorconfig}'
+check 0 'cat src/{a,b}.ts'
+check 0 "awk '{print \$1,\$2}' a.txt"
+check 2 'git log -U3 -- .env'
+check 2 'git log -U -- .env'
+check 2 'git log --unified=3 -- .env'
+check 2 'git log -pU3 -- .env'
+check 2 'git log --word-diff -- .env'
+check 2 'git log --patch-with-stat -- .env'
+check 2 'git reflog -p -- .env'
+check 0 'git log --stat -- .env'
+check 0 'git log -n 5 -- .env'
+check 2 'cat ../../.ssh/id_rsa'
+check 2 'cat ../.aws/credentials'
+check 2 'tar -C ~ -cf - .ssh'
+check 2 'tar -C ~ .ssh'
+check 2 'zip -r x.zip .gnupg/'
+check 2 'cd ~ && cat .ssh/id_rsa'
+check 0 'cat .sshrc'
+check 0 'cat .aws-sam/build.toml'
+check 0 'cat docs/aws.md'
+check 0 'ls ../../.ssh'
+check 2 'cat ~/.netrc'
+check 2 'cat .netrc'
+check 2 'cat ~/.n*'
+check 2 'cat ~/.kube/config'
+check 2 'cat ../.kube/config'
+check 2 'gh auth token'
+check 2 'GH_TOKEN=$(gh auth token) ./x'
+check 2 '/opt/homebrew/bin/gh auth token'
+check 2 'gh auth status --show-token'
+check 2 'gh auth status -t'
+check 0 'gh auth status'
+check 0 'gh auth login'
+check 0 'cat docs/netrc.md'
+check 0 'gh pr create --title "stop printing gh auth token"'
+
+# --- audit 2026-11: a quoted pattern handed to a search tool is data
+check 0 'grep "rm -rf" README.md'
+check 0 "grep -rn 'git push --force' docs"
+check 0 'rg -n "cat .env" docs'
+check 0 'cd docs && grep "rm -rf" a.md'
+check 0 'grep "rm -rf" a.md && grep "git push -f" b.md'
+check 0 'cat a.md | grep -i "rm -rf"'
+check 2 'grep "rm -rf" a.md; rm -rf build'
+check 2 'rm -rf build; grep "x" a.md'
+check 2 'grep "$(rm -rf build)" a.md'
+check 2 'grep "`rm -rf build`" a.md'
+check 2 "sh -c 'grep \"x\" a.md; rm -rf build'"
+check 2 "echo '; grep ' ; rm -rf build ; echo ' x'"
+check 2 "sh -c \"true; grep 'a\"; rm -rf build; echo '\""
+check 2 $'echo a # ; grep "b\nrm -rf build\necho c"'
+# A quoted word after the pattern is a path, and -f takes a path.
+check 2 'grep "x" ".env"'
+check 2 'grep -f ".env" a.md'
+check 2 'grep -e KEY ".env"'
+check 2 'grep "x" < .env'
+check 2 'rg --pre "rm -rf" x'
+check 2 'cat .env | grep "x"'
+check 2 'grep -q "KEY" ~/.config/last30days/.env'
+
 # --- input robustness: the hook must fail closed on garbage
 check_raw 2 'malformed json' '{"tool_input": {"command": "rm -rf build"'
 check_raw 2 'not json at all' 'rm -rf build'
@@ -380,13 +484,45 @@ long=$(printf "x%s='a'; " $(seq 1 1500))
 check 2 "python3 -c \"$long\"; rm -rf build"
 check 0 "python3 -c \"$long\""
 
+# --- limits: past them the guard blocks in about a second, whatever the shape. On
+# bash 3.2 some of these took over 30s at 8KB before the rule loops were made
+# linear, and a killed hook left its $(...) child running for 40 minutes.
+timed_block() { # $1 label, $2 budget seconds, command on stdin
+  local start got elapsed
+  start=$(date +%s)
+  jq -Rs '{tool_input:{command:.}}' | run
+  got=$?
+  elapsed=$(( $(date +%s) - start ))
+  if [ "$got" = 2 ] && [ "$elapsed" -le "$2" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1)); printf 'FAIL %s: want a block within %ss, got exit %s after %ss\n' "$1" "$2" "$got" "$elapsed" >&2
+  fi
+}
+rep_text() { perl -e 'print $ARGV[0] x $ARGV[1]' "$1" "$2"; }
+rep_text 'x' 200000 | timed_block '200KB of one word' 5
+rep_text 'ls; ' 50000 | timed_block '200KB of short commands' 5
+{ printf "cat > a <<'EOF'\n"; rep_text $'line\n' 40000; printf 'EOF\n'; } | timed_block '200KB heredoc' 5
+# shellcheck disable=SC2088  # the literal ~ is the text under test
+rep_text '~/.x ' 6000 | timed_block 'match limit: 30KB of home paths' 15
+rep_text ".env.example " 2400 | timed_block 'match limit: 30KB of env names' 15
+rep_text "git commit -m 'a'; " 1600 | timed_block 'match limit: 30KB of messages' 15
+rep_text 'a; ' 10000 | timed_block 'segment limit: 30KB of commands' 15
+rep_text 'x' 40000 | timed_block 'scan limit: 40KB outside a heredoc' 15
+# Under every limit a command is still read to the end.
+{ rep_text 'x' 30000; printf ' ; rm -rf build'; } | timed_block 'a trailing rm after 30KB' 15
+check 0 "cat <<'EOF'
+$(rep_text 'data ' 12000)
+EOF"
+
 # --- KNOWN_GAP: runtime-built commands the text matcher cannot see.
 # The sandbox is the control for these. Asserted as allowed so the doc stays true.
 check 0 'r=rm; $r -rf build'
 check 0 'f=.env; cat $f'
 check 0 'a=-r; b=f; rm $a$b build'
 check 0 '$(echo rm) -rf build'
-check 0 'cd ~ && cat .ssh/id_rsa'
+check 0 'cd ~/.config/gh && cat hosts.yml'
+# A recursive read names no secrets file. Blocking it would block grep -r, the most common search there is.
+check 0 'grep -r "" .'
+check 0 'grep -rn TOKEN .'
 # A script written first and run second is the Write-tool-then-run case: the
 # sandbox's write scope and denyRead are the control, not text matching.
 check 0 $'cat > x.sh <<\'EOF\'\nrm -rf build\nEOF\nbash x.sh'
@@ -404,6 +540,14 @@ check 0 'cp /tmp/evil/.mcp.json .'
 # writes the harness file unseen.
 check 0 'git apply .claude/handoff/LATEST.patch'
 check 0 'patch -p1 < .claude/handoff/LATEST.patch'
+# A quote opened before a git or jq command makes the span the guard reads as its
+# message or filter into code. The message and jq steps don't track that (the grep
+# step does). SECURITY.md lists it.
+check 0 "echo '; git commit -m ' ; rm -rf build ; echo ' x'"
+# Other credential files, a delete of the source side, a setting used in a later command.
+check 0 'cat ~/.npmrc'
+check 0 'rsync -a --remove-source-files a/ b/'
+check 0 'git config clean.requireForce false'
 
 # --- Self-improvement log: every block leaves a line, and never the command text
 # (commands can carry secrets). `sous report` reads this file back.

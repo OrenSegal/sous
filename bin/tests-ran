@@ -17,8 +17,11 @@
 # Sourced, it only defines tests_ran_count. Runs on bash 3.2.
 #
 # Reads: XCTest ("Executed N tests"), Swift Testing ("Test run with N tests"),
-# pytest ("N passed, M failed in 0.1s"), Vitest ("Tests  N passed (N)") and
-# Jest ("Tests:  N passed, N total"). Skipped tests do not count as executed.
+# pytest ("N passed, M failed in 0.1s"), Vitest ("Tests  N passed (N)"), Jest
+# ("Tests:  N passed, N total"), Mocha ("N passing", "N failing"), node:test
+# ("pass N", "fail N"), go test ("--- PASS:" lines, or without -v one "ok" line
+# per package, which counts packages) and sous's own suites ("name: N passed, M
+# failed"). Skipped tests do not count as executed.
 
 # Prints the number of tests the log at $1 says were executed.
 tests_ran_count() {
@@ -37,6 +40,15 @@ tests_ran_count() {
     match($0, /Executed [0-9]+ test/) { bump(substr($0, RSTART + 9)) }
     match($0, /Test run with [0-9]+ test/) { bump(substr($0, RSTART + 14)) }
     /^[[:space:]]*Tests:?[[:space:]]+[0-9]/ || / in [0-9.]+s/ { bump(ran($0)) }
+    /^([a-z-]+: )?[0-9]+ passed, [0-9]+ failed$/ { bump(ran($0)) }
+    # Mocha and node:test print the passing count, then the failing one on its own line.
+    /^[[:space:]]*[0-9]+ passing/ { two = $1 + 0; bump(two) }
+    /^[[:space:]]*[0-9]+ failing/ { bump(two + $1) }
+    /^[^[:alnum:][:space:]]+ pass [0-9]+[[:space:]]*$/ { two = $3 + 0; bump(two) }
+    /^[^[:alnum:][:space:]]+ fail [0-9]+[[:space:]]*$/ { bump(two + $3) }
+    # go test: top-level results with -v; without it, packages that ran something.
+    /^--- (PASS|FAIL): / { go_tests++ }
+    /^(ok|FAIL)[[:space:]]+[^[:space:]]+[[:space:]]+([0-9.]+s|\(cached\))/ && !/no tests to run/ { go_pkgs++ }
     # The largest count on any line, not the sum. XCTest repeats its total once
     # per nested suite, so a sum would count the same tests several times. That
     # makes this a zero-detector, not a coverage number: parallel shards and
@@ -44,7 +56,7 @@ tests_ran_count() {
     #
     # A log with no count line at all prints 0, not "unknown". Swift Testing
     # prints nothing when a selector matches no test, so silence is the signal.
-    END { print max + 0 }
+    END { bump(go_tests); bump(go_pkgs); print max + 0 }
   '
 }
 
@@ -56,7 +68,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     case "$1" in
       --min) min="${2:-}"; shift 2 || { echo "tests-ran: --min needs a number" >&2; exit 2; } ;;
       --min=*) min="${1#--min=}"; shift ;;
-      -h | --help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -h | --help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
       *) log="$1"; shift ;;
     esac
   done
