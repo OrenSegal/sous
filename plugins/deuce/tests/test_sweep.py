@@ -166,6 +166,39 @@ def test_squash_merged_pr_with_matching_tip_is_force_deleted(capsys, sandbox, fa
     assert ["pr", "list", "--state", "all", "--head", "feat/sq"] == fake_gh.calls[0][:6]
 
 
+def test_squash_merged_pr_with_remote_branch_gone_is_confirmed_by_git(capsys, sandbox, fake_gh):
+    """GitHub's auto-delete, pruned: no remote head to compare, so git has to
+    see the squash on base. Unrelated commits on base since then don't hide it."""
+    tip = sandbox.feature("feat/sq", commits=2)
+    sandbox.squash("feat/sq")
+    sandbox.delete_on_remote("feat/sq")
+    sandbox._on_remote_main(lambda w: sandbox.commit(w, "later.txt", "later\n", "main moved on"))
+    git(sandbox.repo, "fetch", "-q", "--prune", "origin")
+    fake_gh.add("feat/sq", 7, "MERGED", tip)
+
+    code, report = _apply(capsys, sandbox)
+    assert code == cli.EXIT_OK
+    assert by_branch(report)["feat/sq"]["evidence"]["squash"] is True
+    assert "feat/sq" not in sandbox.local_branches()
+
+
+def test_squash_claim_git_cannot_confirm_is_refused(capsys, sandbox, fake_gh):
+    """gh says merged with head == tip, but the remote branch is gone and the
+    work is not on base. The force delete would lose the only copy."""
+    tip = sandbox.feature("feat/wrong", commits=2)
+    sandbox.delete_on_remote("feat/wrong")
+    git(sandbox.repo, "fetch", "-q", "--prune", "origin")
+    fake_gh.add("feat/wrong", 7, "MERGED", tip)
+
+    code, report = _apply(capsys, sandbox)
+    entry = by_branch(report)["feat/wrong"]
+    assert code == cli.EXIT_REFUSED
+    assert entry["rule"] == "safe-delete"
+    assert "PR #7" in entry["reason"] and "fetch" in entry["reason"]
+    _untouched(sandbox, "feat/wrong")
+    assert sandbox.tip("feat/wrong") == tip
+
+
 def test_regular_merged_pr_uses_the_safe_delete(capsys, sandbox, fake_gh):
     tip = sandbox.feature("feat/m")
     sandbox.merge("feat/m")
@@ -268,18 +301,66 @@ def test_dirty_worktree_is_refused(capsys, sandbox, dirt):
     assert "feat/dirty" in sandbox.remote_branches()
 
 
-def test_ignored_files_are_named_before_the_worktree_goes(capsys, sandbox):
+def _merged_with_ignored_file(sandbox):
     sandbox.feature("feat/env")
     sandbox.merge("feat/env")
     sandbox.fetch()
     wt = sandbox.worktree_path("feat/env")
     git(sandbox.repo, "config", "core.excludesFile", str(sandbox.base / "excludes"))
-    (sandbox.base / "excludes").write_text(".env\n")
-    (wt / ".env").write_text("SECRET=1\n")
+    (sandbox.base / "excludes").write_text("secret.env\n")
+    (wt / "secret.env").write_text("SECRET=1\n")
+    return wt
+
+
+def test_worktree_with_ignored_files_is_kept_and_says_why(capsys, sandbox):
+    wt = _merged_with_ignored_file(sandbox)
+    code, report = _apply(capsys, sandbox)
+    entry = by_branch(report)["feat/env"]
+    assert code == cli.EXIT_OK
+    assert (entry["decision"], entry["rule"]) == ("keep", "ignored-files")
+    assert "secret.env" in entry["reason"] and "--delete-ignored" in entry["reason"]
+    assert entry["actions"] == []
+    assert (wt / "secret.env").read_text() == "SECRET=1\n"
+    _untouched(sandbox, "feat/env")
+    assert "feat/env" in sandbox.remote_branches()
+
+
+def test_regenerable_ignored_directory_does_not_keep_the_worktree(capsys, sandbox):
+    sandbox.feature("feat/deps")
+    sandbox.merge("feat/deps")
+    sandbox.fetch()
+    wt = sandbox.worktree_path("feat/deps")
+    git(sandbox.repo, "config", "core.excludesFile", str(sandbox.base / "excludes"))
+    (sandbox.base / "excludes").write_text("node_modules/\n")
+    (wt / "node_modules").mkdir()
+    (wt / "node_modules" / "x.js").write_text("1\n")
     code, report = _sweep(capsys, sandbox)
+    entry = by_branch(report)["feat/deps"]
+    assert code == cli.EXIT_OK
+    assert entry["decision"] == "sweep"
+    assert "node_modules" in entry["actions"][0]["detail"]
+
+
+def test_delete_ignored_flag_names_the_files_then_removes_the_worktree(capsys, sandbox):
+    wt = _merged_with_ignored_file(sandbox)
+    code, report = _sweep(capsys, sandbox, "--delete-ignored")
     remove = by_branch(report)["feat/env"]["actions"][0]
+    assert code == cli.EXIT_OK
     assert remove["kind"] == "remove-worktree"
-    assert ".env" in remove["detail"]
+    assert "secret.env" in remove["detail"]
+    assert wt.is_dir()
+
+    code, _ = _apply(capsys, sandbox, "--delete-ignored")
+    assert code == cli.EXIT_OK
+    assert not wt.exists()
+    assert "feat/env" not in sandbox.local_branches()
+
+
+def test_status_has_no_delete_ignored_flag_and_reports_the_keep(capsys, sandbox):
+    _merged_with_ignored_file(sandbox)
+    code, report = run_json(capsys, "status", "--repo", str(sandbox.repo))
+    assert code == cli.EXIT_OK
+    assert by_branch(report)["feat/env"]["rule"] == "ignored-files"
 
 
 def test_branch_checked_out_in_the_main_worktree_is_refused(capsys, sandbox):

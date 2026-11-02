@@ -11,6 +11,8 @@ Clean up after merged branches with the `deuce` tool. Arguments: `$ARGUMENTS`
 3. Ask the user to approve. Stop and wait for the answer. Silence, a question, or approval of something else is not approval.
 4. Only after the user approves, run the same command with `--apply` added, and report what was done from its output (`[done]`, `[failed]`, `[skipped]`), plus any refusals.
 
+A merged branch whose worktree holds ignored files is kept, and the dry run names the files, because removing the worktree deletes them and `deuce undo` can't restore them. Tell the user. Add `--delete-ignored` only if they ask for it after seeing the names, and show the dry run with that flag before applying.
+
 Never pass `--apply` on your own initiative, in the first run, or because a branch "looks merged". The dry run exists so a person sees what will be deleted first.
 
 Do not work around a refusal. If deuce refuses a branch (uncommitted changes, a locked worktree, commits not in the merged PR, a remote branch with new commits, an ambiguous PR), report the reason and what the user could do; do not commit, stash, unlock, force-delete or push to make it pass. Do not run `git branch -D`, `git worktree remove --force` or `git push --delete` yourself.

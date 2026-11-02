@@ -94,6 +94,7 @@ Every local branch gets exactly one rule. `sweep` branches are cleaned by `--app
 | `merged` | sweep | Merged into base by PR, ancestry or `git cherry`, and every check below passed. |
 | `base` | keep | The base branch itself. |
 | `protected` | keep | Matches a protected name or pattern (below). |
+| `ignored-files` | keep | Its worktree has ignored files, such as a local secrets file. Removing it would delete them and undo can't restore them, so the worktree and branch stay and the reason names the files. `--delete-ignored` lets them go. |
 | `no-commits` | keep | Created and never moved, and not on the remote: a fresh agent branch. |
 | `not-merged` | keep | No evidence that it is merged. Without `gh`, this includes multi-commit squash merges. |
 | `pr-open` | keep | Its pull request is still open. |
@@ -104,7 +105,7 @@ Every local branch gets exactly one rule. `sweep` branches are cleaned by `--app
 | `running-from` | refuse | Its worktree holds the directory deuce runs from (or `--repo`). |
 | `locked` | refuse | Its worktree is locked (`git worktree lock`); the lock reason is shown. |
 | `missing-worktree` | refuse | Its worktree directory is gone. `--apply` prunes the metadata, and the next sweep cleans the branch. |
-| `dirty` | refuse | Its worktree has uncommitted or untracked changes. Ignored files do not block, but they are named in the plan, since they go with the worktree. |
+| `dirty` | refuse | Its worktree has uncommitted or untracked changes. Ignored files are `ignored-files`, above. |
 | `pr-unpushed` | refuse | It has commits that are not in the merged pull request. |
 | `remote-ahead` | refuse | The remote branch has commits that are neither on the local branch nor merged. |
 | `safe-delete` | refuse | `git branch -d` would refuse it, even after fast-forwarding the base, and the force delete is not allowed. |
@@ -115,7 +116,7 @@ For a `sweep` branch, `--apply` runs, in order, stopping at the first failure:
 
 1. Only when `git branch -d` would otherwise refuse: a fast-forward of the base branch (`git merge --ff-only`, where it is checked out), so that git, which checks a branch with no upstream against `HEAD`, sees the merge. Skipped if an earlier branch already did it.
 2. `git worktree remove <path>`, without `--force`, so git itself refuses a dirty worktree too.
-3. `git branch -d <branch>`. The force delete (`-D`) is used only when the evidence is a squash-merged PR whose head sha is exactly the branch tip. The tip is re-read just before the delete; if it moved, the step fails.
+3. `git branch -d <branch>`. The force delete (`-D`) is used only when the evidence is a squash-merged PR whose head sha is exactly the branch tip, and git agrees: the remote branch is at that tip, or merging the tip into base would change nothing (this check needs git 2.38 or later). Otherwise the branch is refused as `safe-delete`. The tip is re-read just before the delete; if it moved, the step fails.
 4. `git push --force-with-lease=<branch>:<sha> <remote> --delete <branch>`, only if a remote-tracking branch exists. The lease is the sha deuce saw, so a push that landed since the last fetch makes this step fail (`stale info`) instead of being thrown away. A remote branch that is already gone (GitHub's auto-delete) counts as done.
 
 Then, whatever happened to the branches: `git fetch --prune <remote>`, a fast-forward of the base branch (only a fast-forward, and skipped if the worktree where base is checked out has uncommitted changes), and `git worktree prune`.
@@ -148,6 +149,7 @@ or `DEUCE_PROTECT="hotfix/*, staging"` (comma or space separated). Patterns are 
 | Command | Flag | Default | |
 |---|---|---|---|
 | `sweep` | `--apply` | off | Do it. Without this flag nothing changes. |
+| `sweep` | `--delete-ignored` | off | Also remove worktrees that hold ignored files, deleting those files for good. The plan names them. |
 | `sweep` `status` `undo` | `--repo DIR` | | The repository, or any of its worktrees. Default: the current directory. |
 | `sweep` `status` | `--base NAME` | `main` | The branch merges land on. Compared through `<remote>/<base>` when it exists, else the local branch. |
 | `sweep` `status` | `--remote NAME` | `origin` | The remote. If it does not exist, only local steps run, with a note. |
@@ -224,7 +226,8 @@ deuce deletes things, so its threat is losing work, not an attacker: a branch wi
 - **gh matches pull requests by branch name.** A pull request from a fork with the same branch name counts too; two PRs means `pr-ambiguous`, and a fork's PR with a different head means `pr-unpushed`. Both are refusals, not deletions.
 - **Remote state is as of the last fetch.** deuce does not fetch before planning, so the dry run and `--apply` agree. The fetch at the end of `--apply` means the next sweep sees more. The lease on the remote delete catches a push that landed in between.
 - **One remote.** Remote branches are matched by name on `--remote`; a branch whose upstream lives on another remote keeps its remote branch.
-- **Ignored files go with their worktree.** `git worktree remove` deletes ignored files (`.env`, build output). The plan names them; read it.
+- **A worktree with ignored files stays until you decide.** `git worktree remove` deletes ignored files such as `.env` or build output, and undo can't bring them back. deuce keeps such a worktree and its branch until you move them or pass `--delete-ignored`. Directories a tool rebuilds (`node_modules`, `.venv`, `__pycache__` and similar) don't hold it back; they're named in the plan and removed.
+- **The force delete's git check is not proof of a merge.** A remote branch at the same tip shows the commit was pushed, not that it landed on base. With the remote branch gone, a squash whose lines base has since changed again is refused rather than recognised.
 
 ## Evals
 

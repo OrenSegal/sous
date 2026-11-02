@@ -65,8 +65,27 @@ BOUNDARIES=(
 # Overridable via env (ARCH_LINT_*) so the same script can be exercised
 # against multiple fixture languages in tests/run.sh without editing this file.
 MODULES_ROOT="${ARCH_LINT_MODULES_ROOT:-src}"
-FILE_GLOB="${ARCH_LINT_FILE_GLOB:-*.ts}"          # e.g. "*.swift", "*.py", "*.go"
-IMPORT_KEYWORD="${ARCH_LINT_IMPORT_KEYWORD:-import}"   # an ERE, e.g. "import", "(from|import)" for Python, 'require\('
+FILE_GLOB="${ARCH_LINT_FILE_GLOB:-*.ts *.tsx}"    # space-separated, e.g. "*.swift", "*.py", "*.go"
+# An ERE. The default covers import, require(...), and any `from '...'`: export-from,
+# and the last line of a multi-line import. E.g. "(from|import)" for Python.
+QUOTE="['\"]"
+DEFAULT_IMPORT_KEYWORD="\\b(import\\b|require\\(|from[[:space:]]*${QUOTE})"
+IMPORT_KEYWORD="${ARCH_LINT_IMPORT_KEYWORD:-$DEFAULT_IMPORT_KEYWORD}"
+
+read -r -a FILE_GLOBS <<< "$FILE_GLOB"
+INCLUDES=()
+for glob in "${FILE_GLOBS[@]}"; do
+  INCLUDES+=("--include=$glob")
+done
+
+# A grep or filter error must stop the run: read as "no hits", it would report clean.
+die() {
+  echo -e "${RED}$1${NC}"
+  exit 1
+}
+
+# grep output whose text starts as a comment. Not trailing comments: see README "Limitations".
+COMMENT_LINE='^[^:]+:[0-9]+:[[:space:]]*(//|/\*|\*|#[[:space:]])'
 
 # ---------------------------------------------------------------------------
 # Boundary check — counts actual violating import lines (not just how many
@@ -84,8 +103,20 @@ check_no_import() {
   [[ -d "$dir" ]] || return 0
 
   CHECKS=$((CHECKS + 1))
-  local hits
-  hits=$(grep -rnE "${IMPORT_KEYWORD}.*\b${forbidden}\b" "$dir" --include="$FILE_GLOB" 2>/dev/null || true)
+  # A whole name: "Data" isn't in "CoreData", and "UI" isn't in "some-UI-pkg".
+  local name="(^|[^[:alnum:]_-])${forbidden}(\$|[^[:alnum:]_-])"
+  local found="" code="" hits="" rc=0
+  found=$(grep -rnE "${IMPORT_KEYWORD}.*${name}" "$dir" "${INCLUDES[@]}") || rc=$?
+  [ "$rc" -le 1 ] || die "grep failed (exit ${rc}) checking ${module} against ${forbidden}; check ARCH_LINT_IMPORT_KEYWORD."
+  rc=0
+  code=$(printf '%s\n' "$found" | grep -vE "$COMMENT_LINE") || rc=$?
+  [ "$rc" -le 1 ] || die "grep failed (exit ${rc}) filtering comments."
+  # Drop a path inside a package ('some-pkg/UI'), unless it starts at the modules root
+  # ('src/UI/x'). '@scope/UI' stays a hit: it is as likely a workspace alias as a package.
+  hits=$(printf '%s\n' "$code" | awk \
+    -v pkg="${QUOTE}[^./'\"@~][^'\"]*/${forbidden}(${QUOTE}|/)" \
+    -v root="${QUOTE}$(basename "$MODULES_ROOT")/" \
+    '!($0 ~ pkg) || $0 ~ root') || die "awk failed filtering package paths."
   if [ -n "$hits" ]; then
     local count
     count=$(echo "$hits" | grep -c .)
@@ -123,11 +154,10 @@ echo "Boundary checks run: $CHECKS"
 # idiom (`_instance = None`, `getInstance()`, etc).
 # ---------------------------------------------------------------------------
 
-singleton_hits=$(
-  grep -rlnE 'static (let|var) shared\b' "$MODULES_ROOT" --include="$FILE_GLOB" 2>/dev/null | \
-  xargs -I{} grep -nE 'static (let|var) shared\b' {} /dev/null 2>/dev/null | \
-  grep -v 'arch-exempt: singleton' || true
-)
+singleton_rc=0
+singleton_found=$(grep -rnE 'static (let|var) shared\b' "$MODULES_ROOT" "${INCLUDES[@]}") || singleton_rc=$?
+[ "$singleton_rc" -le 1 ] || die "grep failed (exit ${singleton_rc}) looking for singletons."
+singleton_hits=$(printf '%s\n' "$singleton_found" | grep -v 'arch-exempt: singleton' || true)
 current_singletons=$(echo "$singleton_hits" | grep -c . || true)
 [ -z "$singleton_hits" ] && current_singletons=0
 
@@ -147,10 +177,19 @@ if [ ! -f "$BASELINE_FILE" ]; then
   exit 1
 fi
 
-baseline_singletons=$(grep '"no_singletons"' "$BASELINE_FILE" | grep -oE '[0-9]+')
+# One key's number, wherever it sits in the file, or nothing.
+baseline_value() {
+  sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*(0|[1-9][0-9]{0,17})[[:space:]]*([,}].*)?\$/\1/p" "$BASELINE_FILE" | head -n 1
+}
 
-baseline_boundaries=$(grep '"boundaries"' "$BASELINE_FILE" 2>/dev/null | grep -oE '[0-9]+' || true)
+baseline_singletons=$(baseline_value no_singletons)
+[ -n "$baseline_singletons" ] || die "No valid no_singletons number in ${BASELINE_FILE}. Fix it, or re-run --init-baseline."
+
+baseline_boundaries=$(baseline_value boundaries)
 if [ -z "$baseline_boundaries" ]; then
+  if grep -q '"boundaries"' "$BASELINE_FILE"; then
+    die "No valid boundaries number in ${BASELINE_FILE}. Fix it, or re-run --init-baseline."
+  fi
   baseline_boundaries=0
   echo -e "${YELLOW}No boundaries baseline found in ${BASELINE_FILE} (older baseline file) — defaulting to 0.${NC}"
 fi

@@ -22,7 +22,7 @@ Never pass `--apply` before the user has seen the dry run and approved it, and n
 
 With `gh` installed and logged in, it asks GitHub for the branch's pull request (`gh pr list --head <branch>`). That is the only way to see a squash merge. Without `gh`, or with no PR, it checks whether the tip is an ancestor of `<remote>/<base>`, then `git cherry` (a rebase merge, or a one-commit squash). The report says which evidence it used. A multi-commit squash merge without `gh` is kept as "not merged": deuce does not guess.
 
-The local branch is deleted with `git branch -d`. The force delete is used only when a squash-merged PR's head is exactly the branch tip.
+The local branch is deleted with `git branch -d`. The force delete is used only when a squash-merged PR's head is exactly the branch tip and git agrees (the remote branch is at that tip, or base already holds its changes).
 
 ## Refusals
 
@@ -42,7 +42,7 @@ A refused branch is left exactly as it is, and the exit code is 1. Report the re
 | `remote-ahead` | the remote branch has commits that are neither on the branch nor merged |
 | `safe-delete` | `git branch -d` would refuse, even after fast-forwarding the base (often a base worktree with uncommitted changes) |
 
-Kept, not refused: the base branch, protected names (`main`, `master`, `develop`, `release/*`, plus `protect` in `.deuce.toml` and `DEUCE_PROTECT`), branches with no commits yet, unmerged branches, and branches whose PR is open. Detached-HEAD worktrees are skipped with a note.
+Kept, not refused: the base branch, protected names (`main`, `master`, `develop`, `release/*`, plus `protect` in `.deuce.toml` and `DEUCE_PROTECT`), branches with no commits yet, unmerged branches, branches whose PR is open, and merged branches whose worktree holds ignored files (`ignored-files`; the reason names them). Removing that worktree would delete those files for good, so pass `--delete-ignored` only if the user asks for it after seeing the names. Detached-HEAD worktrees are skipped with a note.
 
 ## Undo
 

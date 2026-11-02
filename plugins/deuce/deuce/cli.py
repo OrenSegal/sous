@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sweep = commands.add_parser("sweep", help="clean up merged branches (a dry run unless --apply)")
     sweep.add_argument("--apply", action="store_true", help="do it; without this nothing changes")
+    sweep.add_argument("--delete-ignored", action="store_true",
+                       help="also remove worktrees that hold ignored files, deleting those files for good")
     status = commands.add_parser("status", help="list every branch and whether it is stale (read-only)")
     for sub in (sweep, status):
         _repo_flag(sub)
@@ -68,7 +70,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "undo":
             return undo(repo)
         protect = config.load_protect(repo.root)
-        ctx = plan.context(repo, args.base, args.remote, protect, os.getcwd(), GitHub(repo.root))
+        ctx = plan.context(repo, args.base, args.remote, protect, os.getcwd(), GitHub(repo.root),
+                           getattr(args, "delete_ignored", False))
         if args.command == "sweep" and args.apply:
             with repo_lock(repo.common_dir):
                 return _sweep(ctx, args, apply=True)
