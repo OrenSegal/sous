@@ -41,8 +41,8 @@ this page documents `sous` itself.
 ## sous
 
 sous is a Claude Code harness you install in one command. A guard hook blocks
-Bash calls that delete, force-push or read secrets, including the spellings
-deny rules miss, and every guard rule has a block test and an allow test
+Bash calls that delete, discard work, force-push or read secrets, including the
+spellings deny rules miss, and every guard rule has a block test and an allow test
 (`tests/rules.test.sh`). `tests-ran` and `tests-weakened` catch green test
 runs that ran nothing or went green by deleting, skipping or loosening tests,
 and `sous doctor` and `sous gate` re-check that all of it still holds.
@@ -87,9 +87,13 @@ It also ships the [`test-audit`](skills/test-audit/SKILL.md) skill, which gates
 new tests on the behavior they prove and makes deletions show evidence, and
 [`tests-ran`](bin/tests-ran), which exits 1 when a test log shows zero executed
 tests, and [`tests-weakened`](bin/tests-weakened), which reads a diff and flags
-the edit that made the tests pass by deleting, skipping or loosening them. `xcodebuild` reports success when a filter matches nothing, and pytest,
-Vitest and Jest stay green when every test is skipped; `tests-ran --help` lists
-the formats it reads. It reports the largest count it finds, not a sum, so it
+the edit that made the tests pass: deleted, skipped, loosened (`== 42` to
+`is not None`), commented out, cut short by an early `return`, replaced by a
+dummy, moved out of the test directory, or ignored in test config. It is a
+heuristic that reads a diff, so it misses a weakened helper, a block comment or
+`if False:`. `xcodebuild` reports success when a filter matches nothing, and pytest,
+Vitest, Jest, Mocha, node:test and `go test` stay green when nothing ran;
+`tests-ran --help` lists the formats it reads. It reports the largest count it finds, not a sum, so it
 is a zero-detector, not a coverage number.
 
 Runs on macOS and Linux (bash and Python 3); on Windows use WSL.
@@ -277,7 +281,10 @@ listed without reading a working tree they lack.
 spelling, `sous-guard.sh` catches the rest, and the OS sandbox is the boundary.
 None of the three is enough alone. The guard ignores heredoc bodies (a commit
 message that mentions `rm -rf`) unless the heredoc feeds an interpreter
-(`bash <<EOF`). It is a text matcher: what it can't
+(`bash <<EOF`), and a quoted pattern handed to `grep` or `rg` is data too. A
+command too long to read in time is blocked, not waved through, and the hook
+sets a 30-second timeout with `onFailure: "block"`, because Claude Code otherwise
+lets a command through when a hook times out. It is a text matcher: what it can't
 see is listed under known gaps in [SECURITY.md](SECURITY.md), each asserted by
 a test.
 

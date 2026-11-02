@@ -3,18 +3,21 @@
 #
 # Hard-stops agent slips that settings.json Bash deny rules miss, because deny
 # rules match the command text Claude usually writes, not the program:
-#   delete   rm with recursive+force (any spelling or path, $'\x..', ${IFS},
-#            line continuations), rimraf, git clean -f, find -delete,
-#            rsync --delete, rmtree/rm_rf/rmSync-recursive under an interpreter
+#   delete   rm with recursive+force (any spelling or path, flags after operands,
+#            $'\x..', ${IFS}, line continuations), rimraf, git clean -f or with
+#            clean.requireForce off, git reset --hard, find -delete, rsync --del*,
+#            rmtree/rm_rf/rmSync-recursive under an interpreter
 #   push     --force*, -f, +ref, --mirror, --delete, -d, --prune, :ref, and
 #            the same behind -c alias/remote.*.mirror, for every push in the line
 #   secrets  any command naming .env* (bar .example/.sample/.template/.dist, any
-#            case) or a dot-glob reaching it, ~/.ssh, ~/.aws, ~/.gnupg (any
-#            user's home) -- except ls / test / stat, and git short of
-#            show/cat-file/diff/grep/log -p/-c that print contents
+#            case) or a dot-glob or brace reaching it, or a .ssh, .aws, .gnupg,
+#            .kube or .netrc path, relative or in any home -- except ls / test /
+#            stat, and git short of show/cat-file/diff/grep/log -p/-c that print
+#            contents; gh auth token
 #   build    decode or fetch piped into a shell (through sudo/env/VAR=) or an
 #            interpreter reading stdin, sh -c "$(curl ...)", bash <(curl ...),
 #            <<< "$(curl ...)", eval of a decoded or fetched string
+#   limits   a command too long to read in time is blocked, not waved through
 #   tamper   a Bash write to .claude/settings*.json, .claude/hooks/ or .mcp.json:
 #            redirect, tee, cp/mv/install/ln, sed/perl -i, dd of=, rm/chmod,
 #            an interpreter write call naming the path (temp-dir fixtures pass)
@@ -27,11 +30,22 @@
 # get past it. The OS sandbox (settings.json "sandbox": denyRead, write scope,
 # network allowlist) is the boundary; this catches the agent's own slips and the
 # common injection shapes early, with a message that says what to do instead.
+# A quoted pattern handed to grep/rg/ag/ack is data, like a commit message.
 # Red-team corpus and known gaps: tests/adversarial.test.sh. Runs on bash 3.2.
 
 # `sous doctor` compares this stamp between the plugin's guard and a project's
 # copy to report drift; `sous-guard.sh --version` prints it.
 SOUS_GUARD_VERSION=0.3.1
+
+# The guard's limits. Past one it blocks: a command it has not read must not run,
+# and Claude Code lets a command through when a hook times out unless the hook sets
+# onFailure: "block" (2.1.295 and later). Heredoc bodies are skipped cheaply, so they
+# count toward the first limit only. The matches limit bounds the rule loops, each
+# of which re-reads the rest of the command per match.
+SOUS_GUARD_MAX=65536
+SOUS_GUARD_MAX_SCAN=32768
+SOUS_GUARD_MAX_MATCHES=512
+SOUS_GUARD_MAX_SEGMENTS=2048
 
 # Prints the block reason and returns 1 when $1 must not run; returns 0 otherwise.
 # Every block appends "epoch<TAB>reason<TAB>project dir" to $SOUS_LOG (default
@@ -127,10 +141,61 @@ _sous_quote_globs() {
   _sous_q="$out"
 }
 
+# Sets _sous_r to $1 after the first occurrence of the text $2. By length, because
+# ${1#*"$2"} is quadratic in how far in the text sits. Every rule loop advances
+# through here, so this is where the matches limit lives; the exit leaves the
+# $(_sous_match) subshell in sous_guard.
+_sous_cut() {
+  _sous_matches=$((_sous_matches + 1))
+  if (( _sous_matches > SOUS_GUARD_MAX_MATCHES )); then
+    echo "BLOCKED (sous): too long to check, over $SOUS_GUARD_MAX_MATCHES paths or commands to read. Split it, or put it in a script file the user can read."
+    exit 1
+  fi
+  local before="${1%%"$2"*}"
+  _sous_r="${1:${#before}+${#2}}"
+}
+
+# Sets low to $1 in lower case. Forks only for text that has upper case, so a
+# command with hundreds of paths does not cost hundreds of processes.
+_sous_lower() {
+  low="$1"
+  case $1 in *[A-Z]*) low=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]') ;; esac
+}
+
+# Sets _sous_b to the expansions of the brace groups in $1, space separated, so
+# the secrets checks read what bash would. A range ({d..f}) becomes *, for the
+# dot-glob check. Bounded: past 32 words the rest stay unexpanded.
+_sous_braces() {
+  local queue="$1"$'\n' t pre body post n=0 lf=$'\n'
+  local re_list='^(.*)\{([^{},]*,[^{}]*)\}(.*)$' re_range='^(.*)\{[^{},.]+\.\.[^{},]+\}(.*)$'
+  _sous_b=""
+  while [[ -n $queue ]] && (( n < 32 )); do
+    n=$((n + 1))
+    t="${queue%%"$lf"*}"
+    queue="${queue#*"$lf"}"
+    if [[ $t =~ $re_list ]]; then
+      pre="${BASH_REMATCH[1]}"; body="${BASH_REMATCH[2]},"; post="${BASH_REMATCH[3]}"
+      while [[ -n $body ]]; do
+        queue+="$pre${body%%,*}$post$lf"
+        body="${body#*,}"
+      done
+    elif [[ $t =~ $re_range ]]; then
+      queue+="${BASH_REMATCH[1]}*${BASH_REMATCH[2]}$lf"
+    else
+      _sous_b+=" $t"
+    fi
+  done
+}
+
 _sous_match() {
   # C locale: bash 3.2 string ops are many times slower under UTF-8.
   local LC_ALL=C
+  if (( ${#1} > SOUS_GUARD_MAX )); then
+    echo "BLOCKED (sous): too long to check, over $SOUS_GUARD_MAX bytes. Put the data in a file with the Write tool, then run a short command."
+    return 1
+  fi
   local cmd="$1" scan="" line trim m norm seg first rest flags args tok
+  _sous_matches=0
 
   # 1. Heredoc bodies are data (a commit message naming `rm -rf`) unless the
   #    heredoc feeds an interpreter, or its delimiter is unquoted and the body
@@ -143,6 +208,10 @@ _sous_match() {
   else
     scan="$cmd"
   fi
+  if (( ${#scan} > SOUS_GUARD_MAX_SCAN )); then
+    echo "BLOCKED (sous): too long to check, over $SOUS_GUARD_MAX_SCAN bytes outside heredoc bodies. Put the data in a file with the Write tool, then run a short command."
+    return 1
+  fi
 
   # 2. Message arguments are data too: git commit -m "...", gh pr --body/--title.
   #    Only for git/gh, and only a message that can't expand ($ or backtick
@@ -150,12 +219,16 @@ _sous_match() {
   local sq="'" dq='"' bt='`' lf=$'\n'
   local re_msg_pre="((^|[;&|(${lf}])[[:space:]]*(git|gh)[[:space:]]([^;&|${sq}${dq}${bt}\$]*[[:space:]])?)"
   local re_msg_flag='(-[[:alpha:]]*m|-[bt]|--message|--body|--title|--notes)[[:space:]]+'
-  local re_msg_dq="${re_msg_pre}${re_msg_flag}${dq}[^${dq}\$${bt}\\\\]*${dq}"
-  local re_msg_sq="${re_msg_pre}${re_msg_flag}${sq}[^${sq}]*${sq}"
-  while [[ $scan =~ $re_msg_dq || $scan =~ $re_msg_sq ]]; do
+  local re_msg="${re_msg_pre}${re_msg_flag}(${dq}[^${dq}\$${bt}\\\\]*${dq}|${sq}[^${sq}]*${sq})"
+  # Walk forward, keeping the command head so its next flag is still read as a message.
+  rest="$scan"; scan=""
+  while [[ $rest =~ $re_msg ]]; do
     m="${BASH_REMATCH[0]}"
-    scan="${scan/"$m"/${BASH_REMATCH[1]}MSG}"
+    scan+="${rest%%"$m"*}"
+    _sous_cut "$rest" "$m"
+    rest="${BASH_REMATCH[1]}MSG$_sous_r"
   done
+  scan+="$rest"
 
   # 2b. A jq/yq filter is a program, not a path: in `jq '.env' f`, `.env` is a key.
   #     Blank the first positional at command position. Anything that can expand
@@ -174,15 +247,32 @@ _sous_match() {
     else
       jout+="${jm%"$jfilt"}F"
     fi
-    jrest="${jrest#*"$jm"}"
+    _sous_cut "$jrest" "$jm"; jrest="$_sous_r"
   done
   scan="$jout$jrest"
+
+  # 2b2. A quoted pattern handed to a search tool is data: grep "rm -rf" README.md.
+  #     Only the first argument after flags that take no path, only a span that
+  #     can't expand, and only when nothing before it holds a quote, $, backslash
+  #     or #, because a span read from inside another quote is not a span to bash
+  #     (echo '; grep ' ; rm -rf x ; echo ' y'). A plain word has nothing to hide.
+  local re_search="^([^${sq}${dq}${bt}\\\\\$#]*[;&|(${lf}][[:space:]]*|[[:space:]]*)(grep|egrep|fgrep|rg|ag|ack)(([[:space:]]+(-[EFGHILPRTUVZabcehilnoqrsuvwxyz]+|--|--ignore-case|--line-number|--recursive|--count|--fixed-strings|--extended-regexp|--quiet|--word-regexp|--invert-match|--no-heading|--hidden))*)[[:space:]]+(${dq}[^${dq}${sq}\$${bt}\\\\${lf}]*${dq}|${sq}[^${sq}${dq}${lf}]*${sq})"
+  local re_word='^.[[:alnum:]_=]*.$' span
+  n=0
+  while (( n < 8 && ${#scan} <= 2048 )) && [[ $scan =~ $re_search ]]; do
+    m="${BASH_REMATCH[0]}"
+    span="${BASH_REMATCH[$(( ${#BASH_REMATCH[@]} - 1 ))]}"
+    [[ $span =~ $re_word ]] && break
+    scan="${m%"$span"}F${scan:${#m}}"
+    n=$((n + 1))
+  done
 
   # 2c. Spellings bash undoes before running. Done after the message and jq
   #     steps, so decoded text can't open or close a span those steps hide.
   #     $'\x72\x6d' is "rm" (decoded in place), and backslash-newline joins
   #     lines (the joined text is appended, so a stray join hides nothing).
-  local re_ansi='\$'"'"'(([^'"'"'\\]|\\.)*)'"'"'' dec n=0
+  local re_ansi='\$'"'"'(([^'"'"'\\]|\\.)*)'"'"'' dec
+  n=0
   while (( n < 32 )) && [[ $scan =~ $re_ansi ]]; do
     m="${BASH_REMATCH[0]}"
     printf -v dec '%b' "${BASH_REMATCH[1]}"
@@ -202,8 +292,7 @@ _sous_match() {
   local phs="$ph1$ph2$ph3$ph4$ph5$ph6"
   local re_reparse='(^|[^[:alnum:]_.-])(sh|bash|zsh|dash|ksh|fish|eval|ssh|osascript|parallel|watch|source|su|script|expect|trap|alias|python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
   if [[ $scan == *["$phs"]* ]]; then
-    scan="${scan//"$ph1"/}"; scan="${scan//"$ph2"/}"; scan="${scan//"$ph3"/}"
-    scan="${scan//"$ph4"/}"; scan="${scan//"$ph5"/}"; scan="${scan//"$ph6"/}"
+    scan=$(printf '%s' "$scan" | tr -d "$phs"; echo x); scan="${scan%x}"
   fi
   if (( ${#scan} <= 2048 )) && [[ $scan == *[\'\"]* && $scan == *.*[\*\?\[]* ]]; then
     chk="${scan//\"/}"
@@ -241,11 +330,12 @@ _sous_match() {
   # 4. Recursive force delete. Collect each rm's flag run, then test the flags.
   #    Any path to rm (or GNU grm), and commas count as separators so brace
   #    expansion ({rm,-rf,x}) and argv lists ([rm, -rf, x]) are read as flags.
-  local re_rm='(^|[^[:alnum:]_./-])([^[:space:];&|(){}<>]*/)?g?rm(([[:space:],]+-[-[:alnum:]]*)+)'
+  #    Operands on the same line count too: rm x -rf parses its flags all the same.
+  local re_rm='(^|[^[:alnum:]_./-])([^[:space:];&|(){}<>]*/)?g?rm(([[:space:],]+-[-[:alnum:]]*|[[:blank:],]+[^[:space:],;&|()<>]+)+)'
   rest="$norm"
   while [[ $rest =~ $re_rm ]]; do
     flags=" ${BASH_REMATCH[3]//,/ } "
-    rest="${rest#*"${BASH_REMATCH[0]}"}"
+    _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
     if [[ $flags =~ [[:space:]](-[[:alpha:]]*[rR]|--recursive)[[:space:]] ]] &&
        [[ $flags =~ [[:space:]](-[[:alpha:]]*f[[:alpha:]]*|--force)[[:space:]] ]] ||
        [[ $flags =~ [[:space:]]-[[:alpha:]]*[rR][[:alpha:]]*[[:space:]] && $flags =~ [[:space:]]-[[:alpha:]]*f ]]; then
@@ -259,21 +349,40 @@ _sous_match() {
     echo "BLOCKED (sous): rimraf is a recursive force delete. Name the files, list them first, or ask the user."
     return 1
   fi
-  local re_clean='git[[:space:]]+([^|;&]*[[:space:]])?clean(([[:space:]]+-[-[:alnum:]]*)+)'
+  local re_clean='git[[:space:]]+([^|;&]*[[:space:]])?clean(([[:blank:]]+[^[:space:];&|]+)*)'
+  local re_noforce='clean\.requireforce=(false|no|off|0)?[[:space:]]' low=""
   rest="$norm"
   while [[ $rest =~ $re_clean ]]; do
     flags=" ${BASH_REMATCH[2]} "
-    rest="${rest#*"${BASH_REMATCH[0]}"}"
-    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--force) && ! $flags =~ [[:space:]](-[[:alpha:]]*n|--dry-run) ]]; then
+    _sous_lower "${BASH_REMATCH[1]}"
+    _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
+    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--force) || $low =~ $re_noforce ]] &&
+       ! [[ $flags =~ [[:space:]](-[[:alpha:]]*n|--dry-run) ]]; then
       echo "BLOCKED (sous): git clean deletes untracked work. Run git clean -n and show the user the list."
       return 1
     fi
   done
-  if [[ $norm =~ (^|[^[:alnum:]_])find[[:space:]][^|\;\&]*-delete ]]; then
+  local re_reset='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?reset([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+--hard([[:space:]]|$)'
+  if [[ $norm =~ $re_reset ]]; then
+    echo "BLOCKED (sous): git reset --hard discards uncommitted work. Use git stash, or ask the user."
+    return 1
+  fi
+  # find and rsync read a whole argument list, so a quoted or escaped ; | & does
+  # not end it: find x -name ';' -delete. rsync takes any abbreviation of a long
+  # option, and --del is an option itself; --delay-updates is not a delete.
+  local re_find='(^|[^[:alnum:]_])find[[:space:]][^|;&]*-delete'
+  local re_rsync='(^|[^[:alnum:]_])rsync[[:space:]]([^|;&]*[[:space:]])?--(del|dele[-[:alnum:]]*)([[:space:]=]|$)'
+  local argtext=""
+  if [[ $norm == *find*-delete* || $norm == *rsync*--del* ]]; then
+    argtext="$scan"
+    _sous_quote_globs "$argtext" && argtext="$_sous_q"
+    argtext=$(printf '%s' "$argtext" | sed -e 's/\\[;|&]/_/g' | tr -d "\"'\\\\" | tr -d "$phs")
+  fi
+  if [[ $norm =~ $re_find || $argtext =~ $re_find ]]; then
     echo "BLOCKED (sous): find -delete. Run the same find with -print, then delete named paths."
     return 1
   fi
-  if [[ $norm =~ (^|[^[:alnum:]_])rsync[[:space:]][^|\;\&]*--delete ]]; then
+  if [[ $norm =~ $re_rsync || $argtext =~ $re_rsync ]]; then
     echo "BLOCKED (sous): rsync --delete removes files at the destination. Ask the user."
     return 1
   fi
@@ -286,7 +395,7 @@ _sous_match() {
   while [[ $rest =~ $re_push ]]; do
     pre=" ${BASH_REMATCH[1]} "
     args=" ${BASH_REMATCH[2]} "
-    rest="${rest#*"${BASH_REMATCH[0]}"}"
+    _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
     if [[ $args =~ [[:space:]](--force|--mirror|--delete|--prune) ]] ||
        [[ $args =~ [[:space:]]-[[:alpha:]]*[fd][[:alpha:]]*[[:space:]] ]] ||
        [[ $args =~ [[:space:]][+:][^[:space:]] ]] ||
@@ -306,10 +415,13 @@ _sous_match() {
   local re_env='(^|[^[:alnum:]_])(\.[eE][nN][vV?*][[:alnum:]_.*?-]*)'
   # The last30days skill's first-run gate. `grep -q` on one fixed key prints no secret.
   local re_l30_gate='^[[:space:]]*grep[[:space:]]+-q[[:space:]]+["'\'']?SETUP_COMPLETE=true["'\'']?[[:space:]]+(~|\$HOME)/\.config/last30days/\.env([[:space:]]+2>/dev/null)?[[:space:]]*$'
+  local re_logpatch='[[:space:]](-[[:alnum:]]*[pu][[:alnum:]]*|-U[0-9]*|-W|-c|-L[^[:space:]]*|--patch[-[:alpha:]]*|--unified(=[0-9]+)?|--cc|--dd|--word-diff[^[:space:]]*|--color-words[^[:space:]]*|--function-context|--binary|--remerge-diff[^[:space:]]*)([[:space:]]|$)'
+  # A credentials path spelled any way: ../../.ssh/id_rsa, or tar -C ~ .ssh.
+  local re_cred='(^|[[:space:]/=<>:,{(])\.([sS][sS][hH]|[aA][wW][sS]|[gG][nN][uU][pP][gG]|[kK][uU][bB][eE]|[nN][eE][tT][rR][cC])([[:space:]/,}:)]|$)'
   local re_home='(~[[:alnum:]_.-]*|\$HOME|\$\{HOME\}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+|/root|/var/root)/(\.[^/[:space:]]+)'
   local re_interp_cmd='(^|[;&|(`[:space:]/])(python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
   local re_api='(^|[^[:alnum:]_])(rmtree|remove_tree|rm_rf|rm_r|remove_dir|remove_entry_secure|RemoveAll)([[:space:]]*\(|[[:space:]]+[^[:space:]=])|\.(rmSync|rmdirSync|rm|rmdir)\([^)]*recursive'
-  local has_interp=0 low comp cand gsub skip
+  local has_interp=0 comp cand gsub skip
   [[ $norm =~ $re_interp_cmd ]] && has_interp=1
   # Separators as quoted variables: bash 3.2 can't parse `<(` or `$(` inline here.
   local nl=$'\n' sep
@@ -323,10 +435,16 @@ _sous_match() {
   # Word-split each segment with globbing off, so `.env*` stays text instead of
   # expanding against the cwd (bash 3.2 has no `local -`, so restore by hand).
   # Each block below sets $reason and breaks out, so -f is restored in one place.
-  local had_noglob=0 reason=""
+  local had_noglob=0 reason="" segn=0
   case $- in *f*) had_noglob=1 ;; esac
   set -f
   while IFS= read -r qseg; do
+    # Each segment costs a few regex runs: linear, but slow enough to need a limit.
+    segn=$((segn + 1))
+    if (( segn > SOUS_GUARD_MAX_SEGMENTS )); then
+      reason="too long to check, over $SOUS_GUARD_MAX_SEGMENTS commands in one line. Split it, or put it in a script file the user can read."
+      break
+    fi
     seg="$qseg"
     if [[ $qseg == *["$phs"]* ]]; then
       seg="${seg//"$ph1"/*}"; seg="${seg//"$ph2"/?}"; seg="${seg//"$ph3"/[}"
@@ -356,7 +474,7 @@ _sous_match() {
       done
       case $gsub in
         -c|show|cat-file|blame|annotate|grep|diff|difftool|archive|format-patch|whatchanged) first="git $gsub" ;;
-        log) [[ $seg =~ [[:space:]](-p|--patch|-L[^[:space:]]*|-u)([[:space:]]|$) ]] && first="git log -p" ;;
+        log|reflog) [[ $seg =~ $re_logpatch ]] && first="git log -p" ;;
       esac
     fi
     if (( has_interp )) && [[ $seg =~ $re_api ]]; then
@@ -368,11 +486,28 @@ _sous_match() {
     fi
     [[ $first =~ $allow_re ]] && continue
     [[ $seg =~ $re_l30_gate ]] && continue
+    # Every check below needs a dot in the text.
+    [[ $seg == *.* ]] || continue
+    # Read what bash would: .e{nv,} is .env. Added to both, so the quoted-regex test still holds.
+    if [[ $seg == *\{*[,.]*\}* ]]; then
+      for tok in $seg; do
+        case $tok in
+          *.*\{*\}*|*\{*.*\}*)
+            _sous_braces "$tok"
+            seg+=" $_sous_b"; qseg+=" $_sous_b" ;;
+        esac
+      done
+    fi
+    if [[ $seg =~ $re_cred ]]; then
+      _sous_lower "${BASH_REMATCH[2]}"
+      reason="reading ~/.$low credentials. Ask the user."
+      break
+    fi
     rest="$seg"
     while [[ $rest =~ $re_home ]]; do
-      rest="${rest#*"${BASH_REMATCH[0]}"}"
-      low=$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')
-      for cand in .ssh .aws .gnupg; do
+      _sous_lower "${BASH_REMATCH[2]}"
+      _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
+      for cand in .ssh .aws .gnupg .kube .netrc; do
         # shellcheck disable=SC2053  # $low is a pattern on purpose: ~/.s* reaches .ssh
         if [[ $cand == $low ]]; then
           reason="reading ~/$cand credentials. Ask the user."
@@ -383,8 +518,8 @@ _sous_match() {
     rest="$seg"
     while [[ $rest =~ $re_env ]]; do
       tok="${BASH_REMATCH[2]}"
-      rest="${rest#*"$tok"}"
-      low=$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')
+      _sous_cut "$rest" "$tok"; rest="$_sous_r"
+      _sous_lower "$tok"
       case "$low" in
         *.example|*.sample|*.template|*.dist) continue ;;
         .envrc*) ;;
@@ -408,7 +543,7 @@ _sous_match() {
       comp="${comp#[<>]}"
       comp="${comp%%)*}"  # the ) that closes $(...) is not part of the name
       case $comp in .*|'[.]'*) ;; *) continue ;; esac
-      low=$(printf '%s' "$comp" | tr '[:upper:]' '[:lower:]')
+      _sous_lower "$comp"
       for cand in .env .env.local .envrc .env.production .env.development; do
         # shellcheck disable=SC2053  # $low is the user's glob, matched on purpose
         if [[ $cand == $low ]]; then
@@ -432,6 +567,13 @@ _sous_match() {
   #     fixtures) pass. A path built in a variable or reached after cd is a gap.
   if [[ $norm == *.claude/* || $norm == *.mcp.json* ]] && ! _sous_tamper "$norm" "$has_interp"; then
     echo "BLOCKED (sous): writing a harness file (.claude/settings*.json, .claude/hooks/, .mcp.json) from Bash. Show the user the change; they make it."
+    return 1
+  fi
+
+  # 6b2. gh keeps its token in the keychain, so no path names it; this prints it.
+  local re_ghtoken='(^|[^[:alnum:]_.-])([^[:space:];&|()]*/)?gh[[:space:]]+([^|;&]*[[:space:]])?auth[[:space:]]+(token|status[^|;&]*[[:space:]](-t|--show-token))([[:space:];&|)`]|$)'
+  if [[ $norm =~ $re_ghtoken ]]; then
+    echo "BLOCKED (sous): gh auth token prints a GitHub credential. Ask the user."
     return 1
   fi
 
@@ -479,7 +621,7 @@ _sous_tamper() {
     while [[ $rest =~ $re_tmp ]]; do
       m="${BASH_REMATCH[0]}"
       out+="${rest%%"$m"*}"
-      rest="${rest#*"$m"}"
+      _sous_cut "$rest" "$m"; rest="$_sous_r"
       if [[ $m == *.claude/* || $m == *.mcp.json* ]]; then out+="${BASH_REMATCH[1]}TMP"; else out+="$m"; fi
     done
     t="$out$rest"
@@ -504,9 +646,13 @@ _sous_tamper() {
   local re_tok="^([^[:space:]]*[/=])?${p}[)]*\$"
   local re_dir='^([^[:space:]]*/)?\.claude/?$'
   local nl=$'\n' sep had_noglob=0 hit=0
-  for sep in '&&' '||' ';' '|' '&' '$(' '<(' '`'; do
-    t="${t//"$sep"/$nl}"
-  done
+  if (( ${#t} > 2048 )); then
+    t=$(printf '%s' "$t" | awk '{ gsub(/[;|&`]|\$\(|<\(/, "\n"); print }')
+  else
+    for sep in '&&' '||' ';' '|' '&' '$(' '<(' '`'; do
+      t="${t//"$sep"/$nl}"
+    done
+  fi
   case $- in *f*) had_noglob=1 ;; esac
   set -f
   while IFS= read -r seg; do
@@ -571,7 +717,7 @@ _sous_tamper() {
 # is text, as it is to bash.
 _sous_split_heredocs() {
   local LC_ALL=C
-  local line trim head d keep ctx="n" queue="" us=$'\037' budget=65536 hd
+  local line trim head d keep ctx="n" queue="" us=$'\037' budget=8192 hd
   local re_interp='(^|[;&|(`[:space:]/"'\''\\])(bash|sh|zsh|dash|ksh|fish|eval|ssh|python[0-9.]*|perl|ruby|node|php|osascript|source|\$\{?SHELL\}?|\$\{?BASH\}?)([[:space:]"'\''`)]|$|<)|(^|[;&|[:space:]])\.[[:space:]]'
   _sous_scan=""
   while IFS= read -r line || [[ -n $line ]]; do
