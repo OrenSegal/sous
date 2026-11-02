@@ -143,6 +143,54 @@ check "missing modules root exits 1 on --init-baseline" 1 \
   env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/does-not-exist/src" ARCH_LINT_BASELINE_FILE="$BASELINE_J" "$SCRIPT" --init-baseline
 rm -f "$BASELINE_J"
 
+# --- A one-line baseline is read per key, not as "every number on the line" -
+# The ratchet comparison used to error on two numbers and fall through to "clean".
+BASELINE_K="$(mktemp -t arch-lint-baseline-one-line).json"
+printf '{"no_singletons": 0, "boundaries": 0}\n' > "$BASELINE_K"
+check "one-line baseline still fails a regression" 1 \
+  env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/boundary-ratchet-regression/src" ARCH_LINT_BASELINE_FILE="$BASELINE_K" "$SCRIPT"
+check "one-line baseline passes a clean tree" 0 \
+  env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/clean/src" ARCH_LINT_BASELINE_FILE="$BASELINE_K" "$SCRIPT"
+printf '{"boundaries": 2, "no_singletons": 0}\n' > "$BASELINE_K"
+check "one-line baseline assigns each number to its own key" 0 \
+  env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/boundary-ratchet-regression/src" ARCH_LINT_BASELINE_FILE="$BASELINE_K" "$SCRIPT"
+rm -f "$BASELINE_K"
+
+# --- An unreadable baseline or a grep error is a failure, never "clean" -----
+BASELINE_L="$(mktemp -t arch-lint-baseline-garbage).json"
+for bad in 'not json at all' '{"no_singletons": "x", "boundaries": 0}' '{"no_singletons": 0, "boundaries": "x"}' \
+  '{"no_singletons": 0, "boundaries": -1}' '{"no_singletons": 0, "boundaries": 010}' '{"boundaries": 0}'; do
+  printf '%s\n' "$bad" > "$BASELINE_L"
+  check "malformed baseline exits 1: ${bad}" 1 \
+    env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/clean/src" ARCH_LINT_BASELINE_FILE="$BASELINE_L" "$SCRIPT"
+done
+printf '{"no_singletons": 0, "boundaries": 0}\n' > "$BASELINE_L"
+check "invalid import regex exits 1" 1 \
+  env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/clean/src" ARCH_LINT_BASELINE_FILE="$BASELINE_L" ARCH_LINT_IMPORT_KEYWORD='(' "$SCRIPT"
+
+# --- Import forms: tsx, export-from, require and multi-line imports count ---
+out_m="$(env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/import-forms-violation/src" ARCH_LINT_BASELINE_FILE="$BASELINE_L" "$SCRIPT" 2>&1)"
+exit_m=$?
+if [ "$exit_m" -eq 1 ] && echo "$out_m" | grep -q "boundaries (baseline=0, current=4)"; then
+  echo "PASS  tsx, export-from, require and multi-line imports are all counted"
+else
+  echo "FAIL  tsx, export-from, require and multi-line imports are all counted (exit ${exit_m})"
+  echo "      ${out_m//$'\n'/$'\n      '}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- Not imports: comments, package paths, hyphenated names, plain exports --
+out_n="$(env ARCH_LINT_MODULES_ROOT="${TEST_DIR}/fixtures/import-forms-ok/src" ARCH_LINT_BASELINE_FILE="$BASELINE_L" "$SCRIPT" 2>&1)"
+exit_n=$?
+if [ "$exit_n" -eq 0 ] && echo "$out_n" | grep -q "boundaries (baseline=0, current=0)"; then
+  echo "PASS  comments, package paths and plain exports are not violations"
+else
+  echo "FAIL  comments, package paths and plain exports are not violations (exit ${exit_n})"
+  echo "      ${out_n//$'\n'/$'\n      '}"
+  FAILURES=$((FAILURES + 1))
+fi
+rm -f "$BASELINE_L"
+
 echo ""
 if [ "$FAILURES" -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

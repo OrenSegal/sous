@@ -98,6 +98,13 @@ class Repo:
         lines = result.out.split("\n") if result.ok and result.out.strip() else []
         return bool(lines) and all(line.startswith("-") for line in lines if line)
 
+    def content_on(self, tip: str, base_ref: str) -> bool:
+        """Merging the tip into base would change nothing: its work is already
+        there (a squash), even if base has moved on. A conflict, or git older
+        than 2.38, reads as no. Writes only unreachable tree objects, no refs."""
+        merged = self.git("merge-tree", "--write-tree", base_ref, tip)
+        return merged.ok and merged.out.strip() == self.git("rev-parse", f"{base_ref}^{{tree}}").out.strip()
+
     # -- worktrees ------------------------------------------------------------
     def worktrees(self) -> list[Worktree]:
         out = self.git("worktree", "list", "--porcelain").out

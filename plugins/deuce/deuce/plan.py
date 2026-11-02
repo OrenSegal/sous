@@ -13,12 +13,17 @@ from deuce.config import protected_by
 from deuce.evidence import Evidence, GitHub, short_ref
 from deuce.gitrepo import Repo, Worktree
 
+# Ignored paths a package manager or tool rebuilds, so they never hold a worktree back.
+REGENERABLE = frozenset({"node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache",
+                         ".mypy_cache", ".next", ".DS_Store"})
+
 # Every reason a branch ends up where it does: id -> (decision, description).
 # README's "Rules" table and SKILL.md are checked against this by the tests.
 RULES: dict[str, tuple[str, str]] = {
     "merged": ("sweep", "merged into base by PR, ancestry or git cherry, and every check below passed"),
     "base": ("keep", "the base branch itself"),
     "protected": ("keep", "matches a protected name or pattern"),
+    "ignored-files": ("keep", "its worktree has ignored files, which removing it would delete; `--delete-ignored` allows it"),
     "no-commits": ("keep", "created and never moved, and not on the remote: a fresh agent branch"),
     "not-merged": ("keep", "no evidence that it is merged"),
     "pr-open": ("keep", "its pull request is still open"),
@@ -93,6 +98,7 @@ class Context:
     protect: tuple[str, ...]
     cwd: str
     gh: GitHub
+    delete_ignored: bool = False
 
 
 @dataclass
@@ -107,13 +113,14 @@ class UsageError(Exception):
     pass
 
 
-def context(repo: Repo, base: str, remote: str, protect: tuple[str, ...], cwd: str, gh: GitHub) -> Context:
+def context(repo: Repo, base: str, remote: str, protect: tuple[str, ...], cwd: str, gh: GitHub,
+            delete_ignored: bool = False) -> Context:
     has_remote = repo.has_remote(remote)
     candidates = ([f"refs/remotes/{remote}/{base}"] if has_remote else []) + [f"refs/heads/{base}"]
     base_ref = next((ref for ref in candidates if repo.rev(ref)), None)
     if base_ref is None:
         raise UsageError(f"base branch '{base}' not found (looked for {' and '.join(candidates)})")
-    return Context(repo, base, base_ref, remote, has_remote, protect, os.path.realpath(cwd), gh)
+    return Context(repo, base, base_ref, remote, has_remote, protect, os.path.realpath(cwd), gh, delete_ignored)
 
 
 def build(ctx: Context) -> Plan:
@@ -176,7 +183,10 @@ def decide(ctx: Context, name: str, tip: str, wt: Worktree | None, head_ff: Acti
         return bp.decide("remote-ahead", f"remote branch {ctx.remote}/{name} is at {remote_sha[:10]}, which has "
                                          "commits that are neither on this branch nor merged; fetch and look first")
 
-    force = ev.kind == "pr" and ev.squash and tip == ev.pr_head
+    squash_claim = ev.kind == "pr" and ev.squash and tip == ev.pr_head
+    # gh's word alone never justifies the force delete: the remote must agree on the tip, or git must see the work on base.
+    force = squash_claim and (remote_sha == tip or repo.all_patches_upstream(ctx.base_ref, tip)
+                              or repo.content_on(tip, ctx.base_ref))
     if not force:
         target = repo.upstream(name) or "HEAD"
         if not repo.is_ancestor(tip, target):
@@ -187,13 +197,22 @@ def decide(ctx: Context, name: str, tip: str, wt: Worktree | None, head_ff: Acti
                 shown = short_ref(target) if target != "HEAD" else f"HEAD of {repo.root}"
                 why = f"; {ctx.base} is not fast-forwarded first: {head_ff.detail}" \
                     if target == "HEAD" and head_ff and head_ff.status == SKIPPED else ""
+                if squash_claim:
+                    why += (f"; gh says PR #{ev.pr} merged at this tip, but no remote branch is at it and "
+                            f"{short_ref(ctx.base_ref)} does not hold its changes; fetch and sweep again")
                 return bp.decide("safe-delete", f"git branch -d would refuse: the tip is not merged into {shown}, "
                                                 f"which is what git checks{why}")
 
     if wt:
         ignored = repo.ignored(wt.path)
-        detail = f"ignored files go with it: {', '.join(ignored[:10])}" + (" ..." if len(ignored) > 10 else "") \
-            if ignored else ""
+        names = ", ".join(ignored[:10]) + (" ..." if len(ignored) > 10 else "")
+        precious = [p for p in ignored if os.path.basename(p.rstrip("/")) not in REGENERABLE]
+        if precious and not ctx.delete_ignored:
+            shown = ", ".join(precious[:10]) + (" ..." if len(precious) > 10 else "")
+            return bp.decide("ignored-files", f"worktree {wt.path} kept: removing it would delete ignored files that "
+                                              f"`deuce undo` cannot restore: {shown}; move them, or sweep with "
+                                              "--delete-ignored")
+        detail = f"ignored files go with it: {names}" if ignored else ""
         bp.actions.append(Action("remove-worktree", ["worktree", "remove", wt.path], repo.root, detail=detail,
                                  path=wt.path))
     flag = "-" + ("D" if force else "d")  # the force delete only for a squash-merged PR whose head is the tip

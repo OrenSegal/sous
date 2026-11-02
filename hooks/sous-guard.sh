@@ -35,7 +35,7 @@
 
 # `sous doctor` compares this stamp between the plugin's guard and a project's
 # copy to report drift; `sous-guard.sh --version` prints it.
-SOUS_GUARD_VERSION=0.3.1
+SOUS_GUARD_VERSION=0.4.0
 
 # The guard's limits. Past one it blocks: a command it has not read must not run,
 # and Claude Code lets a command through when a hook times out unless the hook sets

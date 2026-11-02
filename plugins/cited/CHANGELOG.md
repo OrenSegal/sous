@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- A number in a quoted claim now has to sit near a word the claim puts next to it. `"founded in 2022"` on a page that says 2019 and mentions 2022 elsewhere came back `verified`, and so did swapped percentages. Both are now `low_match`.
+- `$15.0 million` no longer counts as missing against `$15 million`, and the first word of a later sentence ("Moreover") no longer counts as a missing name.
+
 ## 0.4.0
 
 The hosted web app developed in OrenSegal/cited (`hosted/`, `api/`, `vercel.json`) is not part of the plugin and is not in this copy.

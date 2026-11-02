@@ -22,8 +22,8 @@ The second risk is an agent deciding by itself to run the destructive step. The 
 |---|---|
 | Default | `deuce sweep` is a dry run. Nothing changes without `--apply`. `status` only reads. |
 | Merge evidence | A branch is swept only with evidence: a single merged PR into base (gh), or the tip being an ancestor of `<remote>/<base>`, or `git cherry` finding every commit there. Several PRs, a closed PR, or a PR into another branch are refusals, even if git ancestry says merged. |
-| Worktrees | Removed only with `git worktree remove` (never `--force`), only if listed by `git worktree list`, and only when `git status` shows no changes, staged or untracked. Locked worktrees, the main worktree and the worktree deuce runs from are refused. Ignored files that would go with a worktree are named in the plan. |
-| Local branch | `git branch -d`. The force delete only when the evidence is a squash-merged PR and the branch tip is exactly the PR's head sha. Local commits not in the PR are a refusal. The tip is re-read just before deleting; if it moved, the step fails. |
+| Worktrees | Removed only with `git worktree remove` (never `--force`), only if listed by `git worktree list`, and only when `git status` shows no changes, staged or untracked. Locked worktrees, the main worktree and the worktree deuce runs from are refused. A worktree with ignored files is kept unless `--delete-ignored` is passed; then the plan names them. |
+| Local branch | `git branch -d`. The force delete only when the evidence is a squash-merged PR and the branch tip is exactly the PR's head sha, and git agrees: the remote branch is at that tip, or base already holds the tip's changes. Local commits not in the PR are a refusal. The tip is re-read just before deleting; if it moved, the step fails. |
 | Remote branch | Deleted only if a remote-tracking ref exists, with `--force-with-lease=<branch>:<sha deuce saw>`, so a push since the last fetch is not thrown away. A remote branch with commits that are neither on the local branch nor merged is a refusal. |
 | Base branch | Only fast-forwarded (`merge --ff-only`, or `update-ref` with the old value when it is not checked out), and skipped when its worktree has uncommitted changes. Never reset. |
 | Names | `main`, `master`, `develop`, `release/*` and the base branch are never swept. Configuration can only add names. |
@@ -33,8 +33,8 @@ The second risk is an agent deciding by itself to run the destructive step. The 
 
 ## Not enforced
 
-- **Ignored files are deleted with their worktree.** `.env` files, build output and anything else in `.gitignore` do not block removal; the plan names them.
-- **gh is trusted.** If `gh` answers that a PR merged with a given head, deuce believes it. A malicious `gh` on PATH could get a branch force-deleted (the commits stay recoverable through the audit log and the reflog until garbage collection).
+- **`--delete-ignored` deletes for good.** With that flag, `.env` files, build output and anything else in `.gitignore` go with the worktree; the plan names them. Without it the worktree stays.
+- **gh is mostly trusted.** If `gh` answers that a PR merged with a given head, deuce believes it unless git disagrees. The git check for the force delete is that the remote branch is at the tip or base holds its changes. A remote branch at the tip shows that the commit was pushed, not that it merged, so a wrong or malicious `gh` could still get such a branch deleted (the commits stay recoverable through the audit log and the reflog until garbage collection).
 - **Remote state is as of the last fetch.** The lease protects the remote delete, but the merge evidence is whatever the remote-tracking refs and gh say at plan time.
 - **Undo is local.** `deuce undo --last` recreates the local branch only. It cannot bring back a remote branch, a removed worktree's ignored files, or a commit that has been garbage collected.
 - **The audit log is plain text** in your state directory. Anyone who can write to it can make `undo` recreate a branch at a sha of their choice (never over an existing branch).
