@@ -44,7 +44,7 @@ tests_ran_count() {
     # Mocha and node:test print the passing count, then the failing one on its own line.
     /^[[:space:]]*[0-9]+ passing/ { two = $1 + 0; bump(two) }
     /^[[:space:]]*[0-9]+ failing/ { bump(two + $1) }
-    # ASCII ranges, not [:alnum:]: the reporter's marker is a Unicode letter, which gawk counts as alnum in UTF-8.
+    # ASCII ranges, not [:alnum:]: the reporter marker is a Unicode letter, which gawk counts as alnum in UTF-8.
     /^[^A-Za-z0-9[:space:]]+ pass [0-9]+[[:space:]]*$/ { two = $3 + 0; bump(two) }
     /^[^A-Za-z0-9[:space:]]+ fail [0-9]+[[:space:]]*$/ { bump(two + $3) }
     # go test: top-level results with -v; without it, packages that ran something.
