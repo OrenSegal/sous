@@ -574,6 +574,7 @@ top = [h for h in heads if h != "Unreleased"][0]
 mkt = [p.get("version") for p in json.load(open(r + "/.claude-plugin/marketplace.json"))["plugins"] if p["name"] == "sous"]
 assert top == v and mkt == [v], (v, top, mkt)' "$REPO"
 expect "docs/demo.txt is what docs/demo.sh prints" 0 sh -c 'bash "$1/docs/demo.sh" | cmp -s - "$1/docs/demo.txt"' _ "$REPO"
+expect "docs/demo.svg is what docs/demo_svg.py renders" 0 sh -c 'python3 "$1/docs/demo_svg.py" | cmp -s - "$1/docs/demo.svg"' _ "$REPO"
 expect "README quotes docs/demo.txt verbatim" 0 python3 -c '
 import sys; r = sys.argv[1]
 assert open(r + "/docs/demo.txt").read().rstrip("\n") in open(r + "/README.md").read()' "$REPO"

@@ -1,9 +1,44 @@
 # sous
 
-sous: tools for checking what coding agents actually do.
+sous: runtime guardrails and merge gates for autonomous coding agents, with Claude Code as the reference runtime.
 
 [![ci](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
+![The sous guard blocking rm -rf, a force push and a .env read, and letting git status through](docs/demo.svg)
+
+The capture above is the real output of `bash docs/demo.sh`, rendered by
+`python3 docs/demo_svg.py`; `tests/install.test.sh` fails if either drifts.
+
+| Threat | Control | Proof (run it) |
+|---|---|---|
+| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 17 rules, each with a block and an allow fixture (`bash tests/rules.test.sh`: 55 checks); 438-case red-team corpus of evasions (`bash tests/adversarial.test.sh`) |
+| Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 17 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same 438-case corpus |
+| Fake-green tests (the run passed but executed nothing) | `tests-ran`, and `sous gate --test-log` | 53 test-log cases (`bash tests/tests-ran.test.sh`) |
+| Weakened tests (deleted, skipped, loosened assertion, early `return`) | `tests-weakened`, and `sous gate` | 56 cases (`bash tests/tests-weakened.test.sh`) |
+| Plugin drift (a plugin changes a hook script without bumping its version) | `sous accept` records each plugin's surface; `sous doctor` and `sous gate` name what changed | 16 drift checks in `tests/install.test.sh` |
+| Concurrent edits between sessions | `scoped`: file claims enforced by a PreToolUse hook | 8 OS processes race `claim()` on one SQLite file and exactly one wins, every round (`plugins/scoped/test/concurrency.test.mjs`); 6 racing hook processes, 1 allowed and 5 denied (`test/hook.test.mjs`); `npm test` in `plugins/scoped`: 109 pass, 1 skipped |
+| Lost work on cleanup (squash-merged branch, dirty worktree, unpushed commits) | `deuce`: dry run first, refuses unsafe removals, audit log and undo; guard rules on `git checkout -- .` and `git reset --hard` | 105 cases (`python3 -m pytest tests` in `plugins/deuce`) |
+
+The guard runs on every Bash call, so `sous doctor` fails when the best of
+three benign calls takes over 500ms (`SOUS_GUARD_MS`). Five doctor runs on the
+author's laptop on 2026-11-05 measured 108 to 338ms.
+
+## What runs outside Claude Code
+
+These are plain CLIs that read files, logs and git, so any agent, CI job or
+person can run them:
+
+- `deuce` (`plugins/deuce/bin/deuce`; Python 3.10+ and git, standard library only)
+- `tests-ran` and `tests-weakened` (`bin/`), and `sous gate`, which checks a
+  branch with both before merge
+- `sous compile --to=agents|cursor|copilot`, which writes the deny rules into
+  `AGENTS.md`, `.cursor/rules/sous.mdc` or `.github/copilot-instructions.md`
+
+Only Claude Code enforces the rest: the guard hook, the deny and ask rules, the
+sandbox settings, `scoped` claims and `blast-shield` holds all run inside its
+permission and hook system. Other agents read the compiled rules as a request,
+not a block.
 
 One marketplace, seven Claude Code plugins, five layers. Each layer catches a
 different way an agent's work goes wrong, and each plugin installs on its own:

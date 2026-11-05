@@ -3,7 +3,7 @@
   "owner": {
     "name": "Oren Segal"
   },
-  "description": "sous: tools for checking what coding agents actually do.",
+  "description": "sous: runtime guardrails and merge gates for autonomous coding agents, with Claude Code as the reference runtime.",
   "plugins": [
     {
       "name": "sous",
