@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Marketplace: blast-shield pinned at v1.2.2 (7aa4dd1) instead of v1.2.0, so `blast-shield@sous` gets the fail-closed Bash hook from 1.2.2.
 - Guard, discard: `git checkout .`, `git checkout -- .`, `git restore .`, and the forced forms `git checkout -f` and `git switch -f` / `--discard-changes` are blocked like `git reset --hard`. They threw away uncommitted work and passed. `git restore --staged .` (unstage only) and single-file `git restore src/a.ts` still run. Still allowed, and not yet listed as gaps: `git stash drop`/`clear`, `git branch -D`, `git update-ref -d`.
 
 ## 0.4.0
