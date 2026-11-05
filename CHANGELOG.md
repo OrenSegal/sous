@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Guard, discard: `git checkout .`, `git checkout -- .`, `git restore .`, and the forced forms `git checkout -f` and `git switch -f` / `--discard-changes` are blocked like `git reset --hard`. They threw away uncommitted work and passed. `git restore --staged .` (unstage only) and single-file `git restore src/a.ts` still run. Still allowed, and not yet listed as gaps: `git stash drop`/`clear`, `git branch -D`, `git update-ref -d`.
+
 ## 0.4.0
 
 - cited (0.4.0, without the hosted web app), scoped (0.5.0), deuce and architecture-lint now live in this repo under `plugins/<name>`, imported with their full git history (`git subtree add`). The marketplace lists them as `./plugins/<name>` instead of pinned GitHub tags, so `<name>@sous` serves this repo's copy. Install commands are unchanged. architecture-lint is new to the marketplace (`architecture-lint@sous`, `/architecture-lint:setup`). CI runs each plugin's own suite from its folder.
