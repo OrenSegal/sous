@@ -367,6 +367,16 @@ _sous_match() {
     echo "BLOCKED (sous): git reset --hard discards uncommitted work. Use git stash, or ask the user."
     return 1
   fi
+  # Whole-tree discards other than reset: checkout/restore of ".", and the forced
+  # switch forms. git restore --staged only unstages, so it passes.
+  local re_discard='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?(checkout|restore|switch)([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+(\.|-f|--force|--discard-changes)([[:space:]]|$)'
+  if [[ $norm =~ $re_discard ]]; then
+    local m="${BASH_REMATCH[0]}"
+    if ! [[ $m == *" restore "* && $m == *--staged* && $m != *--worktree* && $m != *" -W"* ]]; then
+      echo "BLOCKED (sous): git checkout, restore or switch that discards uncommitted work. Use git stash, or ask the user."
+      return 1
+    fi
+  fi
   # find and rsync read a whole argument list, so a quoted or escaped ; | & does
   # not end it: find x -name ';' -delete. rsync takes any abbreviation of a long
   # option, and --del is an option itself; --delay-updates is not a delete.
