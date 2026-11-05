@@ -57,6 +57,7 @@ jobs:
             claude plugin validate "$t" --strict
           done
           claude plugin test mods/handoff
+          claude plugin test plugins/blast-shield
 
   # Each plugin under plugins/ keeps its own suite, run from its own folder as in its old repo.
   plugins:
@@ -80,6 +81,14 @@ jobs:
             os: macos-latest
             setup: npm ci
             test: npm test
+          - plugin: blast-shield
+            os: ubuntu-latest
+            setup: "true"
+            test: node test/verify.mjs
+          - plugin: blast-shield
+            os: macos-latest
+            setup: "true"
+            test: node test/verify.mjs
           - plugin: architecture-lint
             os: ubuntu-latest
             setup: "true"
