@@ -27,7 +27,7 @@ different way an agent's work goes wrong, and each plugin installs on its own:
 | Plugin | What it checks | Install |
 |---|---|---|
 | [sous](https://github.com/OrenSegal/sous) | Bash calls that delete, force-push or read secrets; green test runs that ran nothing; whether the harness still holds | `claude plugin install sous@sous` |
-| [blast-shield](https://github.com/OrenSegal/blast-shield) | A mod that holds risky Bash commands (deletes, force-pushes, `kubectl delete`, `terraform destroy`, SQL wipes), shows what they would change and whether you can undo it, and runs them only on Proceed. Apache-2.0 (not MIT) fork of Anthropic's Blast Radius, kept in its own repo ([NOTICE](https://github.com/OrenSegal/blast-shield/blob/main/NOTICE)) | `claude plugin install blast-shield@sous` |
+| [blast-shield](plugins/blast-shield) | A mod that holds risky Bash commands (deletes, force-pushes, `kubectl delete`, `terraform destroy`, SQL wipes), shows what they would change and whether you can undo it, and runs them only on Proceed. Apache-2.0 (not MIT) fork of Anthropic's Blast Radius; its LICENSE and [NOTICE](plugins/blast-shield/NOTICE) stay in its folder | `claude plugin install blast-shield@sous` |
 | [cited](plugins/cited) | Cited sources that don't contain the words, numbers or names a claim attributes to them | `claude plugin install cited@sous` |
 | [scoped](plugins/scoped) | Concurrent Claude Code sessions editing the same files | `claude plugin install scoped@sous` |
 | [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
