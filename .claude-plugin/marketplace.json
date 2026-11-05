@@ -59,14 +59,12 @@
     },
     {
       "name": "blast-shield",
-      "source": {
-        "source": "github",
-        "repo": "OrenSegal/blast-shield",
-        "ref": "v1.2.0",
-        "sha": "7510801c2e46ce8f9876366153517bc7e8554d6d"
+      "source": "./plugins/blast-shield",
+      "description": "Mod: holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL), shows what they would change and whether it can be undone, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius; see plugins/blast-shield/NOTICE.",
+      "version": "1.2.2",
+      "author": {
+        "name": "Oren Segal"
       },
-      "description": "Mod: holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL), shows what they would change and whether it can be undone, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius, kept in its own repo; see its NOTICE.",
-      "version": "1.2.0",
       "license": "Apache-2.0"
     }
   ]

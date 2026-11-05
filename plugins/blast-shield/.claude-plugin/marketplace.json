@@ -1,0 +1,14 @@
+{
+  "name": "blast-shield",
+  "owner": {
+    "name": "Oren Segal"
+  },
+  "plugins": [
+    {
+      "name": "blast-shield",
+      "source": "./",
+      "description": "Hold risky shell commands and show what they would change before they run."
+    }
+  ],
+  "description": "Blast Shield: a Claude Code mod that holds risky shell commands and shows what they would change."
+}

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- blast-shield 1.2.2 now lives in this repo under `plugins/blast-shield`, imported with its full git history (`git subtree add` of v1.2.2, 7aa4dd1), and the marketplace lists it as `./plugins/blast-shield` instead of the v1.2.0 GitHub pin. This reverses the 0.4.0 move to its own repo and brings the fail-closed hook fix that v1.2.0 lacked. It stays Apache-2.0, with its LICENSE and NOTICE in its folder; the rest of sous is MIT. `blast-shield@sous` still installs it. CI runs its `test/verify.mjs` from its folder on Linux and macOS and its classifier tests with `claude plugin test`.
 - Guard, discard: `git checkout .`, `git checkout -- .`, `git restore .`, and the forced forms `git checkout -f` and `git switch -f` / `--discard-changes` are blocked like `git reset --hard`. They threw away uncommitted work and passed. `git restore --staged .` (unstage only) and single-file `git restore src/a.ts` still run. Still allowed, and not yet listed as gaps: `git stash drop`/`clear`, `git branch -D`, `git update-ref -d`.
 
 ## 0.4.0
