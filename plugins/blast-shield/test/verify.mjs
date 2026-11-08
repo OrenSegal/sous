@@ -33,6 +33,8 @@ check("branch -D flags unpushed", x.rep.lines[0].includes("unpushed"), x.rep);
 sh("echo q>q && git add q && git stash -q", d);
 x = await m("git stash drop");
 check("stash drop lists 1", x.rep.lines.length === 1, x.rep);
+x = await m("git stash clear");
+check("stash clear is held and lists 1", x.r?.kind === "git-stash" && x.rep.lines.length === 1, x.rep);
 x = await m("chmod -R 755 src");
 check("chmod -R measures 2 files", /chmod -R would touch 2 files/.test(x.rep.summary), x.rep);
 x = await m("kubectl delete pod nope");
