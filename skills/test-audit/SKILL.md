@@ -1,6 +1,9 @@
 ---
 name: test-audit
 description: Decide whether a test earns its place. Use before writing a new test, when reviewing a diff that adds or deletes tests, when a suite is slow or flaky, or when asked to "clean up tests". Gates new tests on the behavior they prove, flags junk patterns, and requires evidence before any test is deleted.
+metadata:
+  openclaw:
+    homepage: https://github.com/OrenSegal/sous
 ---
 
 # test-audit
