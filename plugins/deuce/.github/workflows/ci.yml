@@ -34,7 +34,7 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Lint bin/deuce
-        run: shellcheck bin/deuce evals/*/setup.sh
+        run: shellcheck bin/deuce evals/*/setup.sh docs/baseline-check.sh
       - name: Test
         run: python -m pytest tests -v
 
