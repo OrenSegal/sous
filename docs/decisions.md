@@ -176,9 +176,11 @@ git diff plugins/cited   # restore the sous badge, install lines and hosted note
 
 then bump `version` in `plugins/cited/.claude-plugin/plugin.json` and
 `.claude-plugin/marketplace.json` to match `safe_fetch.VERSION`, and run
-`(cd plugins/cited && python3 -m pytest tests)`. The excluded files differ
-only in sous URLs or in naming the hosted modules; check them by eye when the
-upstream ones change.
+`(cd plugins/cited && python3 -m pytest tests)`. The excluded files are
+ported by hand: `certificate.py` differs only in comments that name the hosted
+pages, so copy code changes into it (the inline favicon `ICON` was ported
+this way); the README needs the sous badge, install lines and the
+"sous copy" note restored, and the hosted node removed from its diagram.
 
 **Alternatives considered and why rejected.**
 - `git subtree pull`: needs the subtree's history on `main`, which the squash
@@ -191,8 +193,10 @@ upstream ones change.
   before this entry.
 
 **Consequences.** The cited copy drifts until someone resyncs it, and nothing
-fails when it does. The version string in `safe_fetch.py` is the quickest
-check: if it differs between the two repos, resync. Archiving the four
+fails when it does. The version string is not a reliable check: both copies
+read 0.5.0 while the bench intervals and the favicon had drifted. Diff the
+trees instead (`diff -r` against a `git archive` of cited main, with the
+exclusions above). Archiving the four
 standalone repos removes the drift for them.
 
 **Evidence.** 5b6346e (OrenSegal/cited) and fc23966 (sous); the ports and the
