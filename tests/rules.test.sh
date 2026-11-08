@@ -78,5 +78,5 @@ while IFS= read -r lit; do
   fi
 done < <(grep -E 'echo "BLOCKED \(sous\): |reason="' "$HOOK" | grep -v 'not valid JSON\|neither jq nor python3\|local reason\|reason=\$(_sous_match\|reason=""\|(sous): \$reason')
 
-echo "rules: $pass passed, $fail failed"
+echo "rules: $(grep -c . <<<"$RULES") rules, $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

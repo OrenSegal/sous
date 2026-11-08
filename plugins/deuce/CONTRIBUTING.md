@@ -16,7 +16,7 @@ The same commands CI runs:
 
 ```bash
 ruff check .
-shellcheck bin/deuce evals/*/setup.sh
+shellcheck bin/deuce evals/*/setup.sh docs/baseline-check.sh
 python3 -m pytest tests -v
 ```
 
