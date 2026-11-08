@@ -24,6 +24,24 @@ The guard runs on every Bash call, so `sous doctor` fails when the best of
 three benign calls takes over 500ms (`SOUS_GUARD_MS`). Five doctor runs on the
 author's laptop on 2026-11-05 measured 108 to 338ms.
 
+## Components
+
+```mermaid
+flowchart LR
+  CC["Claude Code session"] -->|"every Bash call"| G["hooks/sous-guard.sh (PreToolUse)"]
+  G -->|"reason only"| LOG["~/.claude/sous/blocks.tsv"]
+  CLI["bin/sous: install, doctor, gate, fleet, lint, compile, accept"] --> LIB["lib/sous_*.py"]
+  CLI -->|"writes from templates/"| SET[".claude/settings.json: deny, ask, sandbox"]
+  SET --> CC
+  CLI -->|"report, gate"| LOG
+  CLI -->|"gate"| TR["bin/tests-ran"]
+  CLI -->|"gate"| TW["bin/tests-weakened"]
+  MKT[".claude-plugin/marketplace.json"] --> PL["plugins/: blast-shield, cited, scoped, deuce, architecture-lint"]
+```
+
+Why it is built this way, with the alternatives that were rejected:
+[docs/decisions.md](docs/decisions.md).
+
 ## What runs outside Claude Code
 
 These are plain CLIs that read files, logs and git, so any agent, CI job or
