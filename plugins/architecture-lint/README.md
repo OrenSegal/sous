@@ -8,6 +8,14 @@ A config-driven module-boundary linter with a ratchet baseline, extracted from
 patterns I use to keep a large Swift codebase (an iOS app in TestFlight beta)
 honest about its own architecture docs.
 
+Try it on the bundled fixture, where `Domain` imports from `UI` against an all-zero baseline. It exits 1 and prints the output shown under "Real output":
+
+```bash
+git clone https://github.com/OrenSegal/sous.git && cd sous/plugins/architecture-lint
+echo '{"boundaries":0,"no_singletons":0}' > /tmp/zero.json
+ARCH_LINT_MODULES_ROOT=tests/fixtures/violation/src ARCH_LINT_BASELINE_FILE=/tmp/zero.json ./architecture-lint.sh
+```
+
 ## The problem
 
 Architecture diagrams and "layer X must not import layer Y" rules rot the

@@ -33,6 +33,8 @@ The table shows one throwaway repository with a bare remote (git 2.54, with a fa
 | PR closed without merging | kept | deleted | refused `pr-closed` |
 | PR open | kept | kept | kept `pr-open` |
 
+`docs/baseline-check.sh` reproduces the squash-merge and dirty-worktree rows of the two built-in columns (no `gh` needed); the deuce column is covered by `tests/test_sweep.py`. The other built-in cells are git's documented behavior and are not scripted.
+
 - **Squash merges need `gh`.** deuce asks GitHub for the branch's pull request, which is the only way to see a squash merge. Without `gh`, the run above found no merge that `git branch --merged` missed: the squash-merged branch was kept as `not-merged`.
 - **It refuses instead of losing work.** It stops on dirty or locked worktrees, commits that are not in the merged PR, a remote branch someone pushed to, and a closed PR. In each case the branch is left exactly as it was.
 - **It is recoverable.** Every applied action is logged with the branch's tip sha. In the run above, `deuce undo --last` recreated the deleted squash-merged branch at that sha.

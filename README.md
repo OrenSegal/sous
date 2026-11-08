@@ -5,6 +5,10 @@ sous: runtime guardrails and merge gates for autonomous coding agents, with Clau
 [![ci](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
+For anyone who lets a coding agent run Bash in a repo they care about. To see
+what it would change in a project, without changing it:
+`git clone https://github.com/OrenSegal/sous ~/.sous && ~/.sous/bin/sous install /path/to/project --dry-run`
+
 ![The sous guard blocking rm -rf, a force push and a .env read, and letting git status through](docs/demo.svg)
 
 The capture above is the real output of `bash docs/demo.sh`, rendered by
@@ -12,8 +16,8 @@ The capture above is the real output of `bash docs/demo.sh`, rendered by
 
 | Threat | Control | Proof (run it) |
 |---|---|---|
-| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 17 rules, each with a block and an allow fixture (`bash tests/rules.test.sh`: 55 checks); 438-case red-team corpus of evasions (`bash tests/adversarial.test.sh`) |
-| Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 17 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same 438-case corpus |
+| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 17 rules, each with a block and an allow fixture (`bash tests/rules.test.sh` prints `17 rules, 55 passed`: two rows per rule plus one check per guard message); red-team corpus (`bash tests/adversarial.test.sh` prints `438 passed`: 260 spellings it must block, 156 it must let through, 22 timing, log and loop-breaker checks) |
+| Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 17 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same corpus |
 | Fake-green tests (the run passed but executed nothing) | `tests-ran`, and `sous gate --test-log` | 53 test-log cases (`bash tests/tests-ran.test.sh`) |
 | Weakened tests (deleted, skipped, loosened assertion, early `return`) | `tests-weakened`, and `sous gate` | 56 cases (`bash tests/tests-weakened.test.sh`) |
 | Plugin drift (a plugin changes a hook script without bumping its version) | `sous accept` records each plugin's surface; `sous doctor` and `sous gate` name what changed | 16 drift checks in `tests/install.test.sh` |
@@ -21,8 +25,11 @@ The capture above is the real output of `bash docs/demo.sh`, rendered by
 | Lost work on cleanup (squash-merged branch, dirty worktree, unpushed commits) | `deuce`: dry run first, refuses unsafe removals, audit log and undo; guard rules on `git checkout -- .` and `git reset --hard` | 105 cases (`python3 -m pytest tests` in `plugins/deuce`) |
 
 The guard runs on every Bash call, so `sous doctor` fails when the best of
-three benign calls takes over 500ms (`SOUS_GUARD_MS`). Five doctor runs on the
-author's laptop on 2026-11-05 measured 108 to 338ms.
+three benign calls takes over 500ms (`SOUS_GUARD_MS`), and prints the time when
+it passes. Five runs of `sous doctor /path/to/project | grep 'guard answers'`
+on the author's M2 laptop on 2026-11-07 printed 23 to 33ms. Five runs on
+2026-11-05, same guard, printed 108 to 338ms; why they were slower was not
+recorded.
 
 ## Components
 
@@ -221,6 +228,22 @@ on it, and `sous gate` warns. A plugin can change a hook script without
 bumping its version; this is what catches that. Nothing accepts a change for
 you: the record moves only when you run `sous accept` again. User-scope MCP
 servers in `~/.claude.json` are not covered.
+
+## Limitations
+
+- The author wrote every fixture and corpus row. Passing them shows the guard
+  stops those spellings; it does not measure how often an agent that keeps
+  looking would find one it misses. No outside red team has run against it.
+- The guard reads command text. A path built at runtime or reached after `cd`
+  passes it; [SECURITY.md](SECURITY.md) lists each known gap and a test
+  asserts it. The OS sandbox is the boundary there.
+- `tests-weakened` reads a diff, so a weakened helper, a block comment or
+  `if False:` gets through, and `tests-ran` reports the largest count it finds,
+  not coverage.
+- There are no usage numbers. The evidence is the test suites, the CI history
+  (97 runs of `ci.yml` as of 2026-11-07, 91 green) and the rootcause scenarios
+  above; no outside adoption is recorded.
+- The latency figures come from one laptop, five runs on each of two days.
 
 ## Install
 
