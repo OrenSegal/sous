@@ -14,8 +14,10 @@ Changes made in Blast Shield (Apache-2.0, section 4(b)):
   removal, destructive SQL, recursive chmod/chown/chgrp.
 - Measuring: no dotglob when expanding rm globs; dry runs for kubectl, terraform, find,
   branch deletes and stashes.
-- Pane: Held and Undo lines, wrapped command, clearer key hint; the refusal message
+- Pane: Held, Undo and Impact lines, wrapped command, clearer key hint; the refusal message
   names the matched rule.
+- Impact probes: read-only checks of what else a command touches (CI workflows, open pull
+  requests, environment files, databases, clusters, volumes), added in 1.1.0.
 - Tests: classifier tests (hooks/classify.test.tsx) and a real-process check (test/verify.mjs).
 
 Not an official Anthropic product, and not endorsed by Anthropic. "Claude" and "Claude
