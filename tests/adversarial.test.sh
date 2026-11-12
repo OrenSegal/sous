@@ -530,6 +530,9 @@ check 0 'cd ~/.config/gh && cat hosts.yml'
 # A recursive read names no secrets file. Blocking it would block grep -r, the most common search there is.
 check 0 'grep -r "" .'
 check 0 'grep -rn TOKEN .'
+# A secret named only in a listing (ls/git) piped to a reader that names no
+# path: the reader never sees the name, as with grep -r. denyRead is the control.
+check 0 'ls .env | xargs cat'
 # A script written first and run second is the Write-tool-then-run case: the
 # sandbox's write scope and denyRead are the control, not text matching.
 check 0 $'cat > x.sh <<\'EOF\'\nrm -rf build\nEOF\nbash x.sh'
