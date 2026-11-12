@@ -356,20 +356,20 @@ _sous_match() {
     flags=" ${BASH_REMATCH[2]} "
     _sous_lower "${BASH_REMATCH[1]}"
     _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
-    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--force) || $low =~ $re_noforce ]] &&
-       ! [[ $flags =~ [[:space:]](-[[:alpha:]]*n|--dry-run) ]]; then
+    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--fo[a-z]*) || $low =~ $re_noforce ]] &&
+       ! [[ $flags =~ [[:space:]](-[[:alpha:]]*n|--dr[a-z-]*) ]]; then
       echo "BLOCKED (sous): git clean deletes untracked work. Run git clean -n and show the user the list."
       return 1
     fi
   done
-  local re_reset='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?reset([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+--hard([[:space:]]|$)'
+  local re_reset='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?reset([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+--ha[rd]*([[:space:]]|$)'
   if [[ $norm =~ $re_reset ]]; then
     echo "BLOCKED (sous): git reset --hard discards uncommitted work. Use git stash, or ask the user."
     return 1
   fi
   # Whole-tree discards other than reset: checkout/restore of ".", and the forced
   # switch forms. git restore --staged only unstages, so it passes.
-  local re_discard='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?(checkout|restore|switch)([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+(\.|-f|--force|--discard-changes)([[:space:]]|$)'
+  local re_discard='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?(checkout|restore|switch)([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+(\./|\.|:/\.?|\*|-f|--for[a-z-]*|--di[a-z-]*)([[:space:]]|$)'
   if [[ $norm =~ $re_discard ]]; then
     local m="${BASH_REMATCH[0]}"
     if ! [[ $m == *" restore "* && $m == *--staged* && $m != *--worktree* && $m != *" -W"* ]]; then
@@ -406,8 +406,8 @@ _sous_match() {
     pre=" ${BASH_REMATCH[1]} "
     args=" ${BASH_REMATCH[2]} "
     _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
-    if [[ $args =~ [[:space:]](--force|--mirror|--delete|--prune) ]] ||
-       [[ $args =~ [[:space:]]-[[:alpha:]]*[fd][[:alpha:]]*[[:space:]] ]] ||
+    if [[ $args =~ [[:space:]](--for[a-z-]*|--mi[a-z]*|--de[a-z]*|--pru[a-z]*) ]] ||
+       [[ $args =~ [[:space:]]-[[:alnum:]]*[fd][[:alnum:]]*[[:space:]] ]] ||
        [[ $args =~ [[:space:]][+:][^[:space:]] ]] ||
        [[ $pre =~ mirror=([tT]|1|[yY]|[oO][nN])|\.push=[+:] ]]; then
       echo "BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it."
