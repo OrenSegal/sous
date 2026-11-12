@@ -621,6 +621,10 @@ _sous_match() {
 _sous_tamper() {
   local LC_ALL=C
   local t="$1" out="" rest m seg tok first n args target src inplace
+  # Repeated slashes are one separator to the OS (.claude//settings.json is
+  # .claude/settings.json), so collapse them before the path patterns match.
+  local _dslash='//' _sslash='/'
+  while [[ $t == *//* ]]; do t="${t//$_dslash/$_sslash}"; done
   local p='(\.claude/(settings(\.local)?\.json|hooks(/[^[:space:];&|<>(),]*)?)|\.mcp\.json)'
   local end='([^[:alnum:]_.-]|$)'
   # A harness path under /tmp, /private/tmp, /var/folders or $TMPDIR is a test
@@ -679,7 +683,7 @@ _sous_tamper() {
     done
     (( ${#args[@]} )) || continue
     case $first in
-      tee|sponge|truncate|rm|grm|unlink|chmod|chown|chflags|patch|shred|mv|gmv)
+      tee|sponge|truncate|rm|grm|unlink|chmod|chown|chflags|patch|shred)
         for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
       dd)
         for tok in "${args[@]}"; do [[ $tok == of=* && $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
@@ -688,6 +692,18 @@ _sous_tamper() {
         for tok in "${args[@]}"; do [[ $tok =~ ^-[[:alnum:]]*i || $tok == --in-place* ]] && inplace=1; done
         (( inplace )) || continue
         for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
+      mv|gmv)
+        # A harness file as a source (renamed or moved away, removing the guard)
+        # or moved into the .claude dir (overwriting one). Covers both because
+        # mv is a rename as well as a copy-into-dir.
+        for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done
+        target="${args[${#args[@]}-1]}"
+        if [[ $target =~ $re_dir ]]; then
+          for tok in "${args[@]}"; do
+            tok="${tok%/}"
+            case "${tok##*/}" in settings.json|settings.local.json|hooks) hit=1; break 2 ;; esac
+          done
+        fi ;;
       cp|gcp|install|ginstall|ln|gln|rsync|ditto)
         # The destination: -t DIR, --target-directory=DIR, else the last operand.
         target="" n=0 src=()
