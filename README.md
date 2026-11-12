@@ -16,7 +16,7 @@ The capture above is the real output of `bash docs/demo.sh`, rendered by
 
 | Threat | Control | Proof (run it) |
 |---|---|---|
-| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 17 rules, each with a block and an allow fixture (`bash tests/rules.test.sh` prints `17 rules, 55 passed`: two rows per rule plus one check per guard message); red-team corpus (`bash tests/adversarial.test.sh` prints `438 passed`: 260 spellings it must block, 156 it must let through, 22 timing, log and loop-breaker checks) |
+| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 17 rules, each with a block and an allow fixture (`bash tests/rules.test.sh` prints `17 rules, 55 passed`: two rows per rule plus one check per guard message); red-team corpus (`bash tests/adversarial.test.sh` prints `481 passed`: 287 spellings it must block, 172 it must let through, 22 timing, log and loop-breaker checks) |
 | Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 17 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same corpus |
 | Fake-green tests (the run passed but executed nothing) | `tests-ran`, and `sous gate --test-log` | 53 test-log cases (`bash tests/tests-ran.test.sh`) |
 | Weakened tests (deleted, skipped, loosened assertion, early `return`) | `tests-weakened`, and `sous gate` | 56 cases (`bash tests/tests-weakened.test.sh`) |

@@ -216,7 +216,7 @@ _sous_match() {
   # 2. Message arguments are data too: git commit -m "...", gh pr --body/--title.
   #    Only for git/gh, and only a message that can't expand ($ or backtick
   #    inside double quotes runs code, so that text stays in the scan).
-  local sq="'" dq='"' bt='`' lf=$'\n'
+  local sq="'" dq='"' bt='`' lf=$'\n' dslash='//' sslash='/'
   local re_msg_pre="((^|[;&|(${lf}])[[:space:]]*(git|gh)[[:space:]]([^;&|${sq}${dq}${bt}\$]*[[:space:]])?)"
   local re_msg_flag='(-[[:alpha:]]*m|-[bt]|--message|--body|--title|--notes)[[:space:]]+'
   local re_msg="${re_msg_pre}${re_msg_flag}(${dq}[^${dq}\$${bt}\\\\]*${dq}|${sq}[^${sq}]*${sq})"
@@ -332,7 +332,24 @@ _sous_match() {
   #    expansion ({rm,-rf,x}) and argv lists ([rm, -rf, x]) are read as flags.
   #    Operands on the same line count too: rm x -rf parses its flags all the same.
   local re_rm='(^|[^[:alnum:]_./-])([^[:space:];&|(){}<>]*/)?g?rm(([[:space:],]+-[-[:alnum:]]*|[[:blank:],]+[^[:space:],;&|()<>]+)+)'
-  rest="$norm"
+  # Brace flag lists expand before the scan: bash turns `rm -{r,f} x` into
+  # `rm -r -f x`, so the flags must be read as bash would. Only when a
+  # comma-brace group is present, and with globbing off so a bare token does
+  # not expand against the cwd.
+  local rmnorm="$norm" rmtok rm_noglob=0
+  if [[ $norm == *'{'*','*'}'* ]]; then
+    case $- in *f*) rm_noglob=1 ;; esac
+    set -f
+    rmnorm=""
+    for rmtok in $norm; do
+      case $rmtok in
+        *'{'*','*'}'*) _sous_braces "$rmtok"; rmnorm+="$_sous_b " ;;
+        *) rmnorm+="$rmtok " ;;
+      esac
+    done
+    [ $rm_noglob = 1 ] || set +f
+  fi
+  rest="$rmnorm"
   while [[ $rest =~ $re_rm ]]; do
     flags=" ${BASH_REMATCH[3]//,/ } "
     _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
@@ -356,20 +373,20 @@ _sous_match() {
     flags=" ${BASH_REMATCH[2]} "
     _sous_lower "${BASH_REMATCH[1]}"
     _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
-    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--force) || $low =~ $re_noforce ]] &&
-       ! [[ $flags =~ [[:space:]](-[[:alpha:]]*n|--dry-run) ]]; then
+    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--fo[a-z]*) || $low =~ $re_noforce ]] &&
+       ! [[ $flags =~ [[:space:]](-[[:alpha:]]*n|--dr[a-z-]*) ]]; then
       echo "BLOCKED (sous): git clean deletes untracked work. Run git clean -n and show the user the list."
       return 1
     fi
   done
-  local re_reset='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?reset([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+--hard([[:space:]]|$)'
+  local re_reset='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?reset([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+--ha[rd]*([[:space:]]|$)'
   if [[ $norm =~ $re_reset ]]; then
     echo "BLOCKED (sous): git reset --hard discards uncommitted work. Use git stash, or ask the user."
     return 1
   fi
   # Whole-tree discards other than reset: checkout/restore of ".", and the forced
   # switch forms. git restore --staged only unstages, so it passes.
-  local re_discard='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?(checkout|restore|switch)([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+(\.|-f|--force|--discard-changes)([[:space:]]|$)'
+  local re_discard='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?(checkout|restore|switch)([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+(\./|\.|:/\.?|\*|-f|--for[a-z-]*|--di[a-z-]*)([[:space:]]|$)'
   if [[ $norm =~ $re_discard ]]; then
     local m="${BASH_REMATCH[0]}"
     if ! [[ $m == *" restore "* && $m == *--staged* && $m != *--worktree* && $m != *" -W"* ]]; then
@@ -406,8 +423,8 @@ _sous_match() {
     pre=" ${BASH_REMATCH[1]} "
     args=" ${BASH_REMATCH[2]} "
     _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
-    if [[ $args =~ [[:space:]](--force|--mirror|--delete|--prune) ]] ||
-       [[ $args =~ [[:space:]]-[[:alpha:]]*[fd][[:alpha:]]*[[:space:]] ]] ||
+    if [[ $args =~ [[:space:]](--for[a-z-]*|--mi[a-z]*|--de[a-z]*|--pru[a-z]*) ]] ||
+       [[ $args =~ [[:space:]]-[[:alnum:]]*[fd][[:alnum:]]*[[:space:]] ]] ||
        [[ $args =~ [[:space:]][+:][^[:space:]] ]] ||
        [[ $pre =~ mirror=([tT]|1|[yY]|[oO][nN])|\.push=[+:] ]]; then
       echo "BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it."
@@ -460,6 +477,10 @@ _sous_match() {
       seg="${seg//"$ph1"/*}"; seg="${seg//"$ph2"/?}"; seg="${seg//"$ph3"/[}"
       seg="${seg//"$ph4"/|}"; seg="${seg//"$ph5"/;}"; seg="${seg//"$ph6"/&}"
     fi
+    # Repeated slashes are one separator to the OS, so ~//.ss?/key reads the
+    # same path as ~/.ss?/key; collapse them so the credential checks match.
+    while [[ $seg == *//* ]]; do seg="${seg//$dslash/$sslash}"; done
+    while [[ $qseg == *//* ]]; do qseg="${qseg//$dslash/$sslash}"; done
     first=""
     for tok in $seg; do
       case "$tok" in
@@ -494,7 +515,10 @@ _sous_match() {
            break ;;
       esac
     fi
-    [[ $first =~ $allow_re ]] && continue
+    # ls/git/test/stat only name the path -- unless the segment reads the file's
+    # contents through an input redirect (git stripspace < .env, sort < .env),
+    # in which case fall through to the credential checks below.
+    [[ $first =~ $allow_re && $seg != *'<'* ]] && continue
     [[ $seg =~ $re_l30_gate ]] && continue
     # Every check below needs a dot in the text.
     [[ $seg == *.* ]] || continue
@@ -621,6 +645,10 @@ _sous_match() {
 _sous_tamper() {
   local LC_ALL=C
   local t="$1" out="" rest m seg tok first n args target src inplace
+  # Repeated slashes are one separator to the OS (.claude//settings.json is
+  # .claude/settings.json), so collapse them before the path patterns match.
+  local _dslash='//' _sslash='/'
+  while [[ $t == *//* ]]; do t="${t//$_dslash/$_sslash}"; done
   local p='(\.claude/(settings(\.local)?\.json|hooks(/[^[:space:];&|<>(),]*)?)|\.mcp\.json)'
   local end='([^[:alnum:]_.-]|$)'
   # A harness path under /tmp, /private/tmp, /var/folders or $TMPDIR is a test
@@ -679,7 +707,7 @@ _sous_tamper() {
     done
     (( ${#args[@]} )) || continue
     case $first in
-      tee|sponge|truncate|rm|grm|unlink|chmod|chown|chflags|patch|shred|mv|gmv)
+      tee|sponge|truncate|rm|grm|unlink|chmod|chown|chflags|patch|shred)
         for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
       dd)
         for tok in "${args[@]}"; do [[ $tok == of=* && $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
@@ -688,6 +716,18 @@ _sous_tamper() {
         for tok in "${args[@]}"; do [[ $tok =~ ^-[[:alnum:]]*i || $tok == --in-place* ]] && inplace=1; done
         (( inplace )) || continue
         for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
+      mv|gmv)
+        # A harness file as a source (renamed or moved away, removing the guard)
+        # or moved into the .claude dir (overwriting one). Covers both because
+        # mv is a rename as well as a copy-into-dir.
+        for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done
+        target="${args[${#args[@]}-1]}"
+        if [[ $target =~ $re_dir ]]; then
+          for tok in "${args[@]}"; do
+            tok="${tok%/}"
+            case "${tok##*/}" in settings.json|settings.local.json|hooks) hit=1; break 2 ;; esac
+          done
+        fi ;;
       cp|gcp|install|ginstall|ln|gln|rsync|ditto)
         # The destination: -t DIR, --target-directory=DIR, else the last operand.
         target="" n=0 src=()
