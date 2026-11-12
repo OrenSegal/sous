@@ -100,6 +100,13 @@ check 0 'grep rimraf package.json'
 check 0 'node -e "require(\"fs\").rmSync(\"out.log\")"'
 check 0 'rm -i build/a.o'
 check 0 'echo "${IFS}"'
+# --- delete: brace-expanded flag lists (bash turns -{r,f} into -r -f)
+check 2 'rm -{r,f} build'
+check 2 'rm -{f,r} build'
+check 2 '{rm,-rf,build}'
+check 2 'rm -r{,f} build'
+check 0 'rm -{i,v} build/a.o'
+check 0 'echo {a,b,c}'
 
 # --- push: destructive spellings beyond -f
 check 2 'git push --mirror origin'

@@ -332,7 +332,24 @@ _sous_match() {
   #    expansion ({rm,-rf,x}) and argv lists ([rm, -rf, x]) are read as flags.
   #    Operands on the same line count too: rm x -rf parses its flags all the same.
   local re_rm='(^|[^[:alnum:]_./-])([^[:space:];&|(){}<>]*/)?g?rm(([[:space:],]+-[-[:alnum:]]*|[[:blank:],]+[^[:space:],;&|()<>]+)+)'
-  rest="$norm"
+  # Brace flag lists expand before the scan: bash turns `rm -{r,f} x` into
+  # `rm -r -f x`, so the flags must be read as bash would. Only when a
+  # comma-brace group is present, and with globbing off so a bare token does
+  # not expand against the cwd.
+  local rmnorm="$norm" rmtok rm_noglob=0
+  if [[ $norm == *'{'*','*'}'* ]]; then
+    case $- in *f*) rm_noglob=1 ;; esac
+    set -f
+    rmnorm=""
+    for rmtok in $norm; do
+      case $rmtok in
+        *'{'*','*'}'*) _sous_braces "$rmtok"; rmnorm+="$_sous_b " ;;
+        *) rmnorm+="$rmtok " ;;
+      esac
+    done
+    [ $rm_noglob = 1 ] || set +f
+  fi
+  rest="$rmnorm"
   while [[ $rest =~ $re_rm ]]; do
     flags=" ${BASH_REMATCH[3]//,/ } "
     _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
