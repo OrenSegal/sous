@@ -438,6 +438,14 @@ check 0 'git restore --staged ./'
 check 0 'git checkout -- src/app.ts'
 check 0 'git switch -c harden'
 
+# secret read via input redirect or a repeated-slash credential path
+check 2 'git stripspace < .env'
+check 2 'sort < .env'
+check 2 'cat ~//.ss?/id_ed25519'
+check 2 'head ~//.aws//credentials'
+check 0 'git stripspace < message.txt'
+check 0 'sort < names.txt'
+check 0 'cat ~//project//README.md'
 # --- audit 2026-11: secrets by brace, relative path, other credential files
 check 2 'cat .e{nv,}'
 check 2 'cat .{env,x}'
