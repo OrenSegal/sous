@@ -216,7 +216,7 @@ _sous_match() {
   # 2. Message arguments are data too: git commit -m "...", gh pr --body/--title.
   #    Only for git/gh, and only a message that can't expand ($ or backtick
   #    inside double quotes runs code, so that text stays in the scan).
-  local sq="'" dq='"' bt='`' lf=$'\n'
+  local sq="'" dq='"' bt='`' lf=$'\n' dslash='//' sslash='/'
   local re_msg_pre="((^|[;&|(${lf}])[[:space:]]*(git|gh)[[:space:]]([^;&|${sq}${dq}${bt}\$]*[[:space:]])?)"
   local re_msg_flag='(-[[:alpha:]]*m|-[bt]|--message|--body|--title|--notes)[[:space:]]+'
   local re_msg="${re_msg_pre}${re_msg_flag}(${dq}[^${dq}\$${bt}\\\\]*${dq}|${sq}[^${sq}]*${sq})"
@@ -460,6 +460,10 @@ _sous_match() {
       seg="${seg//"$ph1"/*}"; seg="${seg//"$ph2"/?}"; seg="${seg//"$ph3"/[}"
       seg="${seg//"$ph4"/|}"; seg="${seg//"$ph5"/;}"; seg="${seg//"$ph6"/&}"
     fi
+    # Repeated slashes are one separator to the OS, so ~//.ss?/key reads the
+    # same path as ~/.ss?/key; collapse them so the credential checks match.
+    while [[ $seg == *//* ]]; do seg="${seg//$dslash/$sslash}"; done
+    while [[ $qseg == *//* ]]; do qseg="${qseg//$dslash/$sslash}"; done
     first=""
     for tok in $seg; do
       case "$tok" in
@@ -494,7 +498,10 @@ _sous_match() {
            break ;;
       esac
     fi
-    [[ $first =~ $allow_re ]] && continue
+    # ls/git/test/stat only name the path -- unless the segment reads the file's
+    # contents through an input redirect (git stripspace < .env, sort < .env),
+    # in which case fall through to the credential checks below.
+    [[ $first =~ $allow_re && $seg != *'<'* ]] && continue
     [[ $seg =~ $re_l30_gate ]] && continue
     # Every check below needs a dot in the text.
     [[ $seg == *.* ]] || continue

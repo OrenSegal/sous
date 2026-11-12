@@ -402,6 +402,14 @@ check 0 'git reset --soft HEAD~1'
 check 0 'git reset HEAD file.txt'
 check 0 'git commit -m "drop git reset --hard from the docs"'
 
+# secret read via input redirect or a repeated-slash credential path
+check 2 'git stripspace < .env'
+check 2 'sort < .env'
+check 2 'cat ~//.ss?/id_ed25519'
+check 2 'head ~//.aws//credentials'
+check 0 'git stripspace < message.txt'
+check 0 'sort < names.txt'
+check 0 'cat ~//project//README.md'
 # --- audit 2026-11: secrets by brace, relative path, other credential files
 check 2 'cat .e{nv,}'
 check 2 'cat .{env,x}'
