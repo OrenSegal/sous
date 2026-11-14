@@ -1,4 +1,4 @@
-$ /bin/rm -rf build
+$ /bin/rm -rf src
 BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user.
   exit 2
 
