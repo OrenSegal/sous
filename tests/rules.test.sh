@@ -29,7 +29,7 @@ verdict() { # $1 command -> prints "<exit> <stderr first line>"
 
 # rule key | blocked command | allowed near-miss
 RULES=$(cat <<'R'
-BLOCKED (sous): recursive force delete|/bin/rm -rf build|rm -r build/tmp
+BLOCKED (sous): recursive force delete|/bin/rm -rf vendor|rm -rf node_modules
 rimraf is a recursive|npx rimraf dist|grep rimraf package.json
 git clean deletes|git clean -fd|git clean -n
 find -delete|find . -name '*.o' -delete|find . -name '*.o' -print

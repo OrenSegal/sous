@@ -38,7 +38,7 @@ expect "python default log path" 1 "$(grep -c "~/$want" "$ROOT/lib/sous_blocks.p
 export SOUS_LOG="$WORK/blocks.tsv"
 export CLAUDE_PROJECT_DIR="$WORK/proj dir"
 guard 'git status' >/dev/null
-guard 'rm -rf build' >/dev/null
+guard 'rm -rf vendor' >/dev/null
 rows=$(PYTHONPATH="$ROOT/lib" python3 -c "
 import sous_blocks
 for ts, reason, where in sous_blocks.rows('$SOUS_LOG'):
@@ -52,8 +52,8 @@ case "$report" in
 esac
 
 # The loop breaker reads the same log with the third column present.
-guard 'rm -rf build' >/dev/null
-third=$(guard 'rm -rf build')
+guard 'rm -rf vendor' >/dev/null
+third=$(guard 'rm -rf vendor')
 case "$third" in
   *"Stop retrying this"*) pass=$((pass + 1)) ;;
   *) fail=$((fail + 1)); echo "FAIL: loop breaker silent on third block with a 3-column log: $third" ;;

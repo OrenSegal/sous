@@ -6,8 +6,9 @@
 #   delete   rm with recursive+force (any spelling or path, flags after operands,
 #            $'\x..', ${IFS}, line continuations), rimraf, git clean -f or with
 #            clean.requireForce off, git reset --hard, find -delete, rsync --del*,
-#            rmtree/rm_rf/rmSync-recursive under an interpreter
-#   push     --force*, -f, +ref, --mirror, --delete, -d, --prune, :ref, and
+#            rmtree/rm_rf/rmSync-recursive under an interpreter; an rm -rf of
+#            build output only (node_modules, dist, .build, ...) passes
+#   push    --force*, -f, +ref, --mirror, --delete, -d, --prune, :ref, and
 #            the same behind -c alias/remote.*.mirror, for every push in the line
 #   secrets  any command naming .env* (bar .example/.sample/.template/.dist, any
 #            case) or a dot-glob or brace reaching it, or a .ssh, .aws, .gnupg,
@@ -48,10 +49,12 @@ SOUS_GUARD_MAX_MATCHES=512
 SOUS_GUARD_MAX_SEGMENTS=2048
 
 # Prints the block reason and returns 1 when $1 must not run; returns 0 otherwise.
-# Every block appends "epoch<TAB>reason<TAB>project dir" to $SOUS_LOG (default
-# ~/.claude/sous/blocks.tsv; SOUS_LOG=off disables). Reason only, never the
-# command: command text can carry secrets, so a reason is fixed text or a name
-# from a closed list, never text copied from the command. `sous report` reads it back so the
+# Every block appends "epoch<TAB>reason<TAB>project dir<TAB>command" to $SOUS_LOG
+# (default ~/.claude/sous/blocks.tsv; SOUS_LOG=off disables). The reason is fixed
+# text or a name from a closed list, never text copied from the command, so the
+# agent's message carries no word of it. The command column is there to tell a
+# false positive from a real catch: redacted (_sous_redact) and cut to 200
+# characters, since command text can carry secrets. `sous report` reads it back so the
 # rules get tuned from what fired, not from memory; the directory
 # ($CLAUDE_PROJECT_DIR, else the hook's cwd) lets `sous gate` and `sous fleet`
 # tell worktrees apart.
@@ -77,15 +80,32 @@ sous_guard() {
     now=$(date +%s)
     where=${where//$'\t'/ }; where=${where//$'\n'/ }
     if [[ -r $log ]]; then
-      while IFS=$'\t' read -r ts r w; do
+      while IFS=$'\t' read -r ts r w _; do
         [[ $ts =~ ^[0-9]+$ && $r == "$reason" && $w == "$where" && $((now - ts)) -le 120 ]] && repeats=$((repeats + 1))
       done < <(tail -n 8 "$log" 2>/dev/null)
     fi
     [[ $repeats -ge 2 ]] && shown="$reason Blocked at least $((repeats + 1)) times for the same reason in the last two minutes. Stop retrying this; ask the user how they want to proceed."
-    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\n' "$now" "$reason" "$where" >>"$log"; } 2>/dev/null
+    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\t%s\n' "$now" "$reason" "$where" "$(_sous_redact "$1")" >>"$log"; } 2>/dev/null
   fi
   printf '%s\n' "$shown"
   return 1
+}
+
+# Prints $1 on one line with secret-looking text masked, cut to 200 characters.
+# Masks NAME=value (quoted values whole), URL credentials, -u user:pass, Bearer/
+# Basic/Token values, AWS key ids and any 24+ character run of token characters;
+# a private key block drops the whole command. Over-masks on purpose.
+_sous_redact() {
+  local LC_ALL=C s sq="'"
+  case $1 in *'PRIVATE KEY'*) printf '[redacted: private key]'; return ;; esac
+  s=$(printf '%s' "$1" | tr '\t\n\r' '   ' | tr -d '\000-\037\177' | sed -E \
+    -e 's#://[^/@[:space:]]+@#://***@#g' \
+    -e "s/([Bb]earer|[Bb]asic|[Tt]oken)[[:space:]]+[^[:space:]\"$sq]+/\\1 ***/g" \
+    -e "s/([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"]*(\"|\$)|${sq}[^${sq}]*(${sq}|\$)|[^[:space:]]*)/\\1=***/g" \
+    -e 's/(-u|--user)[[:space:]]+[^[:space:]]*:[^[:space:]]*/\1 ***/g' \
+    -e 's/AKIA[0-9A-Z]{16}/***/g' \
+    -e 's/[A-Za-z0-9_+=-]{24,}/***/g')
+  printf '%s' "${s:0:200}"
 }
 
 # Sets _sous_q to $1 with * ? [ | ; & inside a quoted span swapped for \001 to
@@ -256,12 +276,19 @@ _sous_match() {
   #     can't expand, and only when nothing before it holds a quote, $, backslash
   #     or #, because a span read from inside another quote is not a span to bash
   #     (echo '; grep ' ; rm -rf x ; echo ' y'). A plain word has nothing to hide.
-  local re_search="^([^${sq}${dq}${bt}\\\\\$#]*[;&|(${lf}][[:space:]]*|[[:space:]]*)(grep|egrep|fgrep|rg|ag|ack)(([[:space:]]+(-[EFGHILPRTUVZabcehilnoqrsuvwxyz]+|--|--ignore-case|--line-number|--recursive|--count|--fixed-strings|--extended-regexp|--quiet|--word-regexp|--invert-match|--no-heading|--hidden))*)[[:space:]]+(${dq}[^${dq}${sq}\$${bt}\\\\${lf}]*${dq}|${sq}[^${sq}${dq}${lf}]*${sq})"
+  #     Flags that take a value (-A 3, -m 5, --include=GLOB, -g GLOB) are skipped
+  #     with their value, which stays in the scan; a \x escape other than \" may sit
+  #     in a double-quoted pattern. -f takes a path, so it never counts as a flag.
+  local re_val="(${dq}[^${dq}\$${bt}\\\\${lf}]*${dq}|${sq}[^${sq}${lf}]*${sq}|[^-#[:space:]${sq}${dq}\$${bt}\\\\;&|()<>][^[:space:]${sq}${dq}\$${bt}\\\\;&|()<>]*)"
+  local re_vflag="-[ABCm][[:space:]]*[0-9]+|--(after-context|before-context|context|max-count)(=|[[:space:]]+)[0-9]+|(--include|--exclude|--exclude-dir|--glob|-g)(=|[[:space:]]*)${re_val}"
+  local re_search="^([^${sq}${dq}${bt}\\\\\$#]*[;&|(${lf}][[:space:]]*|[[:space:]]*)(grep|egrep|fgrep|rg|ag|ack)(([[:space:]]+(-[EFGHILPRTUVZabcehilnoqrsuvwxyz]+|--|--ignore-case|--line-number|--recursive|--count|--fixed-strings|--extended-regexp|--quiet|--word-regexp|--invert-match|--no-heading|--hidden|${re_vflag}))*)[[:space:]]+(${dq}([^${dq}${sq}\$${bt}\\\\${lf}]|\\\\[^${dq}\$${bt}${lf}])*${dq}|${sq}[^${sq}${dq}${lf}]*${sq})"
   local re_word='^.[[:alnum:]_=]*.$' span
   n=0
   while (( n < 8 && ${#scan} <= 2048 )) && [[ $scan =~ $re_search ]]; do
     m="${BASH_REMATCH[0]}"
-    span="${BASH_REMATCH[$(( ${#BASH_REMATCH[@]} - 1 ))]}"
+    # The span is what follows the flags; groups inside it make its index vary.
+    span="${m:${#BASH_REMATCH[1]}+${#BASH_REMATCH[2]}+${#BASH_REMATCH[3]}}"
+    span="${span#"${span%%[![:space:]]*}"}"
     [[ $span =~ $re_word ]] && break
     scan="${m%"$span"}F${scan:${#m}}"
     n=$((n + 1))
@@ -349,13 +376,19 @@ _sous_match() {
     done
     [ $rm_noglob = 1 ] || set +f
   fi
+  local rmm rmpre prev
   rest="$rmnorm"
   while [[ $rest =~ $re_rm ]]; do
     flags=" ${BASH_REMATCH[3]//,/ } "
-    _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
+    rmm="${BASH_REMATCH[0]}"; rmpre="${BASH_REMATCH[1]}"; prev="$rest"
+    _sous_cut "$rest" "$rmm"; rest="$_sous_r"
     if [[ $flags =~ [[:space:]](-[[:alpha:]]*[rR]|--recursive)[[:space:]] ]] &&
        [[ $flags =~ [[:space:]](-[[:alpha:]]*f[[:alpha:]]*|--force)[[:space:]] ]] ||
        [[ $flags =~ [[:space:]]-[[:alpha:]]*[rR][[:alpha:]]*[[:space:]] && $flags =~ [[:space:]]-[[:alpha:]]*f ]]; then
+      # Build output only, with rm first in its command (not behind xargs, sudo,
+      # find -exec, sh -c, which add or hide targets).
+      rmpre="${prev%%"$rmm"*}$rmpre"; rmpre="${rmpre##*[;&|(]}"; rmpre="${rmpre##*"$lf"}"
+      [[ $rmpre =~ ^[[:space:]]*$ ]] && _sous_rm_build "$flags" && continue
       echo "BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user."
       return 1
     fi
@@ -638,6 +671,24 @@ _sous_match() {
     return 1
   fi
   return 0
+}
+
+# Returns 0 when $1 (an rm's flags and operands) names at least one target and
+# every target's last component is a known build-output dir. A target that can
+# expand ($, backtick, glob, brace) or ends in / . .. ~ fails. Step 4 of _sous_match.
+_sous_rm_build() {
+  local tok opts=1 n=0 toks
+  read -r -a toks <<< "${1//$'\n'/ }"
+  for tok in ${toks[@]+"${toks[@]}"}; do
+    if (( opts )) && [[ $tok == -* ]]; then [[ $tok == -- ]] && opts=0; continue; fi
+    case $tok in *[\$\`\*\?\[\]\{\}]*) return 1 ;; esac
+    while [[ $tok == */ ]]; do tok="${tok%/}"; done
+    case ${tok##*/} in
+      .build|DerivedData|node_modules|dist|build|.next|__pycache__|.pytest_cache|coverage) n=$((n + 1)) ;;
+      *) return 1 ;;
+    esac
+  done
+  (( n > 0 ))
 }
 
 # Returns 1 when $1 (normalized command text) writes a harness file; $2 is 1

@@ -8,7 +8,9 @@ sous is a guard, so a bypass is a security bug.
   - an `install` or `upgrade` that edits `~/.claude` or removes an existing rule
   - an `uninstall` that removes a rule, key or file sous didn't add
 - Out of scope, and documented as known gaps (each is a `check 0` row in `tests/adversarial.test.sh`, so the docs go red if that changes):
-  - commands built at runtime: `r=rm; $r -rf x`, `f=.env; cat $f`, `$(echo rm) -rf build`. No text matcher can see through a variable.
+  - commands built at runtime: `r=rm; $r -rf x`, `f=.env; cat $f`, `$(echo rm) -rf vendor`. No text matcher can see through a variable.
+  - `rm -rf` of build output, on purpose: when `rm` starts its command and every target's last component is `.build`, `DerivedData`, `node_modules`, `dist`, `build`, `.next`, `__pycache__`, `.pytest_cache` or `coverage`, it runs. Any directory with one of those names is deletable that way, real source included, at any absolute path, through a symlink with a trailing slash, or after a `cd`. A target with `$`, a backtick, a glob or a brace, or one behind `xargs`, `sudo` or `find -exec`, still blocks.
+  - the block log's command column is redacted by pattern (`NAME=value`, URL credentials, `-u user:pass`, Bearer/Basic/Token values, AWS key ids, 24+ character token runs, private key blocks). A short secret passed as a bare argument (`mysql -pS3cret`, `sshpass -p hunter2`) is written as is.
   - paths reached through a `cd` into a directory the rules don't name: `cd ~/.config/gh && cat hosts.yml`
   - recursive reads, on purpose: `grep -r "" .` prints every file under the directory, secrets included, but it names none of them, and blocking it would block `grep -r`, the most common search there is. `denyRead` in the sandbox is the control. The same holds when a secret is named only in a listing that is piped to a reader naming no path, `ls .env | xargs cat`: the reader never sees the name, and blocking it would block `ls | xargs`.
   - credential files outside the list. The guard knows `.env*`, `.ssh`, `.aws`, `.gnupg`, `.kube` and `.netrc`, and `gh auth token`. It does not know `~/.config/gh/hosts.yml`, `~/.npmrc` or `~/.docker/config.json`.
