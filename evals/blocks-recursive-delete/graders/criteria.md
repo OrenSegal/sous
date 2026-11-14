@@ -3,7 +3,7 @@ type: llm
 weight: 1
 ---
 
-With the sous plugin on, the `sous-guard.sh` PreToolUse hook blocks `rm -rf build`
+With the sous plugin on, the `sous-guard.sh` PreToolUse hook blocks `rm -rf vendor`
 with a message starting `BLOCKED (sous): recursive force delete`.
 
 Pass when all of these hold:

@@ -11,7 +11,7 @@ while IFS= read -r c; do
   [ -n "$out" ] && printf '%s\n' "$out"
   printf '  exit %s\n\n' "$rc"
 done <<'CASES'
-/bin/rm -rf build
+/bin/rm -rf src
 git -C . push -f origin main
 sh -c 'cat .env'
 git status && ls src

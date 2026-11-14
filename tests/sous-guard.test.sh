@@ -32,14 +32,44 @@ check() {
 }
 
 # Recursive force delete, every spelling.
-check 2 'rm -rf build'
-check 2 'rm -fr build'
-check 2 'rm -Rf build'
-check 2 'rm -r -f build'
-check 2 'rm -f -r build'
-check 2 '/bin/rm -rf build'
-check 2 "sh -c 'rm -rf build'"
-check 2 'cd ios && rm -rf .build'
+check 2 'rm -rf vendor'
+check 2 'rm -fr vendor'
+check 2 'rm -Rf vendor'
+check 2 'rm -r -f vendor'
+check 2 'rm -f -r vendor'
+check 2 '/bin/rm -rf vendor'
+check 2 "sh -c 'rm -rf vendor'"
+# Build output only: every target's last component is a known build dir, rm is the
+# first word of its command, and no target can expand. Anything else still blocks.
+check 0 'cd ios && rm -rf .build'
+check 0 'rm -rf node_modules'
+check 0 'rm -rf .build DerivedData'
+check 0 'rm -rf dist build .next coverage __pycache__ .pytest_cache'
+check 0 'rm -rf ./node_modules/'
+check 0 'rm -rf packages/app/node_modules && npm install'
+check 0 'rm -rf ~/Library/Developer/Xcode/DerivedData'
+check 0 '/bin/rm -rf -- dist'
+check 2 'rm -rf node_modules src'
+check 2 'rm -rf node_modules /'
+check 2 'rm -rf ~'
+check 2 'rm -rf .'
+check 2 'rm -rf node_modules/..'
+check 2 'rm -rf build/../src'
+check 2 'rm -rf */node_modules'
+check 2 'rm -rf node_modules*'
+check 2 'rm -rf $DIR/node_modules'
+check 2 'rm -rf "$DIR"/build'
+check 2 'rm -rf `pwd`/build'
+check 2 'rm -rf {node_modules,src}'
+check 2 'rm -rf'
+check 2 'xargs rm -rf node_modules < list.txt'
+check 2 'ls | xargs rm -rf node_modules'
+check 2 'find . -name node_modules -exec rm -rf {} +'
+check 2 'sudo rm -rf node_modules'
+check 2 'rm -rf node_modules; rm -rf vendor'
+check 2 'rm -rf dist && rm -rf .'
+check 2 'rm -rf node_modules .env'
+check 2 'rm -rf node_modules 2>/dev/null; rm -rf ~/'
 # Plain deletes stay allowed.
 check 0 'rm -f /tmp/x.log'
 check 0 'rm -r emptydir'
@@ -111,10 +141,10 @@ never cat .env in a session
 EOF"
 # ...unless the heredoc feeds a shell, and text after the delimiter still counts.
 check 2 "bash <<'EOF'
-rm -rf build
+rm -rf vendor
 EOF"
 check 2 "cat <<'EOF' | bash
-rm -rf build
+rm -rf vendor
 EOF"
 check 2 "cat <<EOF | sh
 git push -f origin dev
@@ -122,15 +152,15 @@ EOF"
 check 2 "cat > x.txt <<EOF
 harmless
 EOF
-rm -rf build"
+rm -rf vendor"
 
 # The block log's third column names the project, so `sous gate` and `sous fleet`
 # can tell worktrees apart: $CLAUDE_PROJECT_DIR, else the hook's working directory.
 # A tab or newline in it would break the row, so they become spaces.
 : >"$SOUS_LOG"
 unset CLAUDE_PROJECT_DIR
-CLAUDE_PROJECT_DIR=$'/w/one\ttwo\nthree' check 2 'rm -rf build'
-check 2 'rm -rf build'
+CLAUDE_PROJECT_DIR=$'/w/one\ttwo\nthree' check 2 'rm -rf vendor'
+check 2 'rm -rf vendor'
 want=$(printf '/w/one two three\n%s' "$(cd "$SANDBOX_DIR" && pwd)")
 if [ "$(cut -f3 "$SOUS_LOG")" = "$want" ] && [ "$(wc -l <"$SOUS_LOG")" -eq 2 ]; then pass=$((pass + 1)); else
   fail=$((fail + 1)); printf 'FAIL block log path column: want\n%s\ngot:\n' "$want" >&2; cat "$SOUS_LOG" >&2

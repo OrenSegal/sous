@@ -56,6 +56,15 @@ text = sous_blocks.render_report(log, 7)
 expect("render_report: rate", True, text.startswith("sous report: 2 blocks, 3 allowed (40.0% blocked) in the last 7 days"))
 expect("render_report: counts reasons", True, "      2  force push" in text)
 expect("render_report: no allowed, no rate", True, "allowed" not in sous_blocks.render_report(os.path.join(tmp, "none"), 7))
+expect("render_report: no command column, no command list", True, "Recent blocked commands" not in text)
+log4 = os.path.join(tmp, "blocks4.tsv")
+with open(log4, "w") as f:
+    f.write(f"{now}\tBLOCKED (sous): force push. Ask.\t/p\tgit push -f origin main\n")   # four columns
+    f.write(f"{now}\tBLOCKED (sous): force push. Ask.\t/p\n")
+expect("rows: four columns keep three fields", [(now, "BLOCKED (sous): force push. Ask.", "/p")] * 2, sous_blocks.rows(log4))
+expect("commands: only rows with a command", [("force push", "git push -f origin main")], sous_blocks.commands(log4, 7))
+text4 = sous_blocks.render_report(log4, 7)
+expect("render_report: lists recent commands", True, "force push: git push -f origin main" in text4)
 
 expect("PROHIBIT matches", True, bool(sous_lint.PROHIBIT.search("Never run `rm -rf`")))
 expect("span_kind path", "path", sous_lint.span_kind(".env"))

@@ -1,5 +1,5 @@
 """The guard's block log and what `sous report` says about it. The bash guard writes
-epoch<TAB>reason<TAB>project dir per block, and one byte per allowed command to
+epoch<TAB>reason<TAB>project dir<TAB>redacted command per block, and one byte per allowed command to
 <log>.allowed.YYYYMMDD; these are the readers. The log path is passed in, never read
 from the environment here, so tests don't need a HOME."""
 import collections
@@ -33,6 +33,21 @@ def rows(log):
             if len(cols) >= 2 and cols[0].isdigit() and cols[1]:
                 out.append((int(cols[0]), cols[1], cols[2] if len(cols) > 2 and cols[2] else None))
     return out
+
+
+def commands(log, days, n=10):
+    """(short reason, redacted command) for the last `n` blocks in the last `days`
+    days that carry the command column (guards before it wrote three columns)."""
+    if log == "off" or not os.path.isfile(log):
+        return []
+    cutoff = time.time() - days * 86400
+    out = []
+    with open(log, errors="replace") as f:
+        for line in f:
+            cols = line.rstrip("\n").split("\t")
+            if len(cols) >= 4 and cols[0].isdigit() and int(cols[0]) >= cutoff and cols[1] and cols[3]:
+                out.append((short_reason(cols[1]), cols[3]))
+    return out[-n:]
 
 
 def short_reason(reason):
@@ -69,4 +84,8 @@ def render_report(log, days):
     rate = f", {allowed} allowed ({percent_blocked(len(found), allowed):.1f}% blocked)" if allowed else ""
     lines = [f"sous report: {len(found)} blocks{rate} in the last {days} days ({log})\n"]
     lines += [f"  {n:5d}  {reason}" for reason, n in collections.Counter(found).most_common()]
+    recent = commands(log, days)
+    if recent:
+        lines += ["", "Recent blocked commands (redacted, newest last):"]
+        lines += [f"  {reason}: {cmd}" for reason, cmd in recent]
     return "\n".join(lines) + "\n" + REPORT_LOOP

@@ -36,7 +36,7 @@ recorded.
 ```mermaid
 flowchart LR
   CC["Claude Code session"] -->|"every Bash call"| G["hooks/sous-guard.sh (PreToolUse)"]
-  G -->|"reason only"| LOG["~/.claude/sous/blocks.tsv"]
+  G -->|"reason + redacted command"| LOG["~/.claude/sous/blocks.tsv"]
   CLI["bin/sous: install, doctor, gate, fleet, lint, compile, accept"] --> LIB["lib/sous_*.py"]
   CLI -->|"writes from templates/"| SET[".claude/settings.json: deny, ask, sandbox"]
   SET --> CC
@@ -110,7 +110,7 @@ and `sous doctor` and `sous gate` re-check that all of it still holds.
 Real output from `bash docs/demo.sh`, which feeds each command to the guard:
 
 ```text
-$ /bin/rm -rf build
+$ /bin/rm -rf src
 BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user.
   exit 2
 
@@ -195,8 +195,8 @@ Three claims, each one checked by something you can run:
 Around those claims:
 
 - **Loop breaker.** The third identical block from the same project within two
-  minutes adds "Stop retrying this; ask the user" to what the agent sees. It reads the same
-  reason-only log, so no command text is kept.
+  minutes adds "Stop retrying this; ask the user" to what the agent sees. It counts
+  by the log's reason column.
 - **Block rate.** The guard counts allowed commands as one byte per day in
   `blocks.tsv.allowed.YYYYMMDD`, never their text, and `sous report` shows
   "N blocks, M allowed (x% blocked)". It is a block rate, not a false-positive
@@ -307,9 +307,12 @@ add up and local scalars win. Claude Code's docs don't confirm that, so doctor
 says so when a local file is present.
 
 The guard appends each block to `~/.claude/sous/blocks.tsv` as a timestamp, a
-reason and the project directory, never the command text (`SOUS_LOG=off`
-disables it). `sous report`
-counts blocks by reason: a false positive becomes a `check 0` row in
+reason, the project directory and the command, redacted and cut to 200
+characters (`SOUS_LOG=off` disables it). Redaction masks `NAME=value`, URL
+credentials, `-u user:pass`, Bearer/Basic/Token values, AWS key ids and any run
+of 24 or more token characters; it is a heuristic, so the log is still a file to
+keep private. The agent's message never carries command text. `sous report`
+counts blocks by reason and lists the last ten commands: a false positive becomes a `check 0` row in
 `tests/adversarial.test.sh`, a bypass a `check 2` row, and a rule that never
 fires is a deletion candidate.
 
