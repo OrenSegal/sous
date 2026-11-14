@@ -44,16 +44,20 @@ export const register: Register = on => {
     return next(e)
   })
 
-  for (const tool of ['Edit', 'Write', 'MultiEdit'] as const) {
-    on('tool.call', { tool }, async ($, e, next) => {
-      const ran = await next(e)
-      if (ran.deny === undefined && ran.isError !== true) {
-        await update($, filesAtom, f => (f.includes(e.file_path) ? f : [...f, e.file_path].slice(-50)))
-      }
+  // one registration per tool: the matcher types `tool` as a single literal, so a loop over a union no longer narrows `e`
+  const track = (p: string) => (f: string[]) => (f.includes(p) ? f : [...f, p].slice(-50))
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny === undefined && ran.isError !== true) await update($, filesAtom, track(e.file_path))
 
-      return ran
-    })
-  }
+    return ran
+  })
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny === undefined && ran.isError !== true) await update($, filesAtom, track(e.file_path))
+
+    return ran
+  })
 
   on('turn.complete', async ($, e, next) => {
     const git = (argv: string[]) => $.process.run(['git', ...argv]).catch(() => null)

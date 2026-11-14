@@ -4,7 +4,7 @@ const done = { answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', re
 
 test('turn.complete writes the handoff files', async ($, on) => {
   const writes: string[] = []
-  on('process.run', () => ({ value: { exitCode: 0, stdout: ' a.ts | 2 +-\n', stderr: '' } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: ' a.ts | 2 +-\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('session.root', () => ({ value: '/work/app' }))
   on('session.model', () => ({ value: 'claude-sonnet-5-5' }))
   on('clock.now', () => ({ value: Date.parse('2026-10-02T19:00:00Z') }))
@@ -23,10 +23,10 @@ test('turn.complete writes the handoff files', async ($, on) => {
 // written `/` must be there: `**/*.pem` misses a top-level `private.pem`.
 test('the patch leaves out secret-looking files at the repo root too', async ($, on) => {
   const diffs: string[][] = []
-  on('process.run', (_: unknown, e: { argv: string[] }) => {
-    if (e.argv[1] === 'diff' && e.argv[2] === 'HEAD') diffs.push(e.argv)
+  on('process.run', (_: unknown, e: { readonly argv: readonly string[] }) => {
+    if (e.argv[1] === 'diff' && e.argv[2] === 'HEAD') diffs.push([...e.argv])
 
-    return { value: { exitCode: 0, stdout: ' a.ts | 2 +-\n', stderr: '' } }
+    return { value: { exitCode: 0, stdout: ' a.ts | 2 +-\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('session.root', () => ({ value: '/work/app' }))
   on('session.model', () => ({ value: 'm' }))
@@ -46,10 +46,10 @@ test('the patch leaves out secret-looking files at the repo root too', async ($,
 test('a content change with the same diffstat refreshes LATEST.patch', async ($, on) => {
   let turn = 0
   const patches: string[] = []
-  on('process.run', (_: unknown, e: { argv: string[] }) => {
+  on('process.run', (_: unknown, e: { readonly argv: readonly string[] }) => {
     const out = e.argv[1] === 'diff' && e.argv[2] === 'HEAD' ? `+line v${turn}\n` : ' a.ts | 2 +-\n'
 
-    return { value: { exitCode: 0, stdout: out, stderr: '' } }
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('session.root', () => ({ value: '/work/app' }))
   on('session.model', () => ({ value: 'm' }))
@@ -71,10 +71,10 @@ test('a content change with the same diffstat refreshes LATEST.patch', async ($,
 // git apply can use, not as "Binary files differ" lines it can't.
 test('the patch carries binary changes', async ($, on) => {
   const diffs: string[][] = []
-  on('process.run', (_: unknown, e: { argv: string[] }) => {
-    if (e.argv[1] === 'diff' && e.argv[2] === 'HEAD') diffs.push(e.argv)
+  on('process.run', (_: unknown, e: { readonly argv: readonly string[] }) => {
+    if (e.argv[1] === 'diff' && e.argv[2] === 'HEAD') diffs.push([...e.argv])
 
-    return { value: { exitCode: 0, stdout: ' a.ts | 2 +-\n', stderr: '' } }
+    return { value: { exitCode: 0, stdout: ' a.ts | 2 +-\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('session.root', () => ({ value: '/work/app' }))
   on('session.model', () => ({ value: 'm' }))
@@ -95,8 +95,8 @@ test('an oversized patch is cut at a file boundary, with a note', async ($, on) 
   const a = fileDiff('a.ts', [hunk(1, 200000)])
   const b = fileDiff('b.ts', [hunk(1, 200000)])
   const out: Record<string, string> = {}
-  on('process.run', (_: unknown, e: { argv: string[] }) => ({
-    value: { exitCode: 0, stdout: e.argv[1] === 'diff' && e.argv[2] === 'HEAD' ? a + b : ' a | 1 +\n', stderr: '' },
+  on('process.run', (_: unknown, e: { readonly argv: readonly string[] }) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'diff' && e.argv[2] === 'HEAD' ? a + b : ' a | 1 +\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('session.root', () => ({ value: '/w' }))
   on('session.model', () => ({ value: 'm' }))
@@ -108,19 +108,19 @@ test('an oversized patch is cut at a file boundary, with a note', async ($, on) 
   })
   on('turn.complete', () => ({ text: 'ok' }))
   await $.turn.complete(done)
-  const patch = out['LATEST.patch']
+  const patch = out['LATEST.patch'] ?? ''
   expect(patch.startsWith(a)).toBe(true)
   expect(patch.includes('diff --git a/b.ts')).toBe(false)
   expect(patch.slice(a.length)).toMatch(/^\n# sous handoff: .*cut.*b\.ts/)
-  expect(out['LATEST.md'].includes('cut')).toBe(true)
+  expect((out['LATEST.md'] ?? '').includes('cut')).toBe(true)
 })
 
 test('one file over the cap is cut at a hunk boundary, with a note', async ($, on) => {
   const first = hunk(1, 150000)
   const a = fileDiff('a.ts', [first, hunk(9, 200000)])
   let patch = ''
-  on('process.run', (_: unknown, e: { argv: string[] }) => ({
-    value: { exitCode: 0, stdout: e.argv[1] === 'diff' && e.argv[2] === 'HEAD' ? a : ' a | 1 +\n', stderr: '' },
+  on('process.run', (_: unknown, e: { readonly argv: readonly string[] }) => ({
+    value: { exitCode: 0, stdout: e.argv[1] === 'diff' && e.argv[2] === 'HEAD' ? a : ' a | 1 +\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('session.root', () => ({ value: '/w' }))
   on('session.model', () => ({ value: 'm' }))
