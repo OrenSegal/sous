@@ -5,9 +5,13 @@ sous: runtime guardrails and merge gates for autonomous coding agents, with Clau
 [![ci](https://github.com/OrenSegal/sous/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenSegal/sous/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-For anyone who lets a coding agent run Bash in a repo they care about. To see
-what it would change in a project, without changing it:
-`git clone https://github.com/OrenSegal/sous ~/.sous && ~/.sous/bin/sous install /path/to/project --dry-run`
+For anyone who lets a coding agent run Bash in a repo they care about. See what it
+would change in a project, without changing it:
+
+```bash
+git clone https://github.com/OrenSegal/sous ~/.sous
+~/.sous/bin/sous install /path/to/project --dry-run
+```
 
 ![The sous guard blocking rm -rf, a force push and a .env read, and letting git status through](docs/demo.svg)
 
