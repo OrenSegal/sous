@@ -27,6 +27,8 @@ jobs:
       - name: ruff
         if: runner.os == 'Linux'
         run: pipx run ruff==0.17.4 check bin/sous lib
+      - name: which bash runs the suites
+        run: command -v bash && bash --version | head -1
       - name: guard table
         run: bash tests/sous-guard.test.sh
       - name: red-team corpus

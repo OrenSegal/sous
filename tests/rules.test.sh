@@ -75,7 +75,8 @@ while IFS='|' read -r key blocked allowed; do
 done <<<"$RULES"
 
 # No rule without rows: every message literal in the guard source must contain
-# the key of some row. Infrastructure messages (unreadable hook input) are not rules.
+# the key of some row. Infrastructure messages (unreadable hook input, a check
+# that errored) are not rules; tests/adversarial.test.sh covers the errored check.
 while IFS= read -r lit; do
   hit=0
   while IFS='|' read -r key _; do
@@ -84,7 +85,7 @@ while IFS= read -r lit; do
   if [ "$hit" = 1 ]; then pass=$((pass + 1)); else
     fail=$((fail + 1)); printf 'FAIL guard rule with no row in tests/rules.test.sh: %s\n' "$lit" >&2
   fi
-done < <(grep -E 'echo "BLOCKED \(sous\): |reason="' "$HOOK" | grep -v 'not valid JSON\|neither jq nor python3\|local reason\|reason=\$(_sous_match\|reason=""\|(sous): \$reason')
+done < <(grep -E 'echo "BLOCKED \(sous\): |reason="' "$HOOK" | grep -v 'not valid JSON\|neither jq nor python3\|internal error checking\|local reason\|reason=\$(_sous_match\|reason=""\|(sous): \$reason')
 
 echo "rules: $(grep -c . <<<"$RULES") rules, $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

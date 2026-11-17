@@ -74,11 +74,15 @@ sous_guard() {
       reason=$_sous_pr; rule=$_sous_prid
     fi
   else
+    # A check that failed without its message (a bash error inside _sous_match)
+    # is still a block: a guard that can't finish reading a command fails closed.
+    [[ $reason == "BLOCKED (sous): "* ]] ||
+      reason="BLOCKED (sous): the guard hit an internal error checking this command, so it stops it. Ask the user, and report it with sous report."
     _sous_rule_id "$reason"; rule=$_sous_id
     # The harness guarding itself is never lifted: tamper, accept/uninstall, the
-    # say-so records, and commands too long to read.
+    # say-so records, commands too long to read, and a check that errored.
     case $rule in
-      tamper | sous-accept | sous-record | too-long) ;;
+      tamper | sous-accept | sous-record | too-long | internal-error) ;;
       *) [[ -f $rules ]] && _sous_project_rule "$rules" allow "$rule" "$1" && reason= ;;
     esac
   fi
@@ -134,6 +138,7 @@ _sous_rule_id() {
     *"git reset --hard discards"*) _sous_id='git-reset-hard' ;;
     *"gh auth token prints"*) _sous_id='gh-token' ;;
     *"too long to check"*) _sous_id='too-long' ;;
+    *"internal error checking this command"*) _sous_id='internal-error' ;;
     *) _sous_id='other' ;;
   esac
 }

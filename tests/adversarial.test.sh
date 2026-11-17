@@ -18,7 +18,8 @@ HOOK="${SOUS_GUARD_HOOK:-$HERE/../hooks/sous-guard.sh}"
 case "$HOOK" in /*) ;; *) HOOK="$PWD/$HOOK" ;; esac
 SANDBOX_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sous-test.XXXXXX") || exit 1  # macOS bare mktemp ignores TMPDIR
 export SOUS_LOG="$SANDBOX_DIR/blocks.tsv"   # never write the real block log from tests
-trap 'rm -f "$SOUS_LOG" "$SOUS_LOG".allowed.*; rmdir "$SANDBOX_DIR"' EXIT
+ERR_OUT="$SANDBOX_DIR/stderr"   # the hook's stderr for the last run
+trap 'rm -f "$SOUS_LOG" "$SOUS_LOG".allowed.* "$ERR_OUT"; rmdir "$SANDBOX_DIR"' EXIT
 pass=0
 fail=0
 
@@ -26,13 +27,17 @@ run() { # stdin payload -> exit code
   # alarm: a hook that hangs stalls every Bash call in the session, so a hang fails here.
   # 15s: 5s flakes on a loaded machine; the scale rows below time themselves more tightly.
   # $BASH: the hook runs on the bash running this file, so `/bin/bash x.test.sh` tests 3.2.
-  (cd "$SANDBOX_DIR" && CLAUDE_TOOL_INPUT='' perl -e 'alarm 15; exec @ARGV' "$BASH" "$HOOK" >/dev/null 2>&1)
+  (cd "$SANDBOX_DIR" && CLAUDE_TOOL_INPUT='' perl -e 'alarm 15; exec @ARGV' "$BASH" "$HOOK" >/dev/null 2>"$ERR_OUT")
 }
 check() { # $1 want, $2 command text
   local got
   jq -cn --arg c "$2" '{tool_input:{command:$c}}' | run
   got=$?
-  if [ "$got" = "$1" ]; then pass=$((pass + 1)); else
+  # A block from a check that errored is the right exit code for the wrong
+  # reason: the guard must read every corpus row without a bash error.
+  if grep -q 'internal error checking' "$ERR_OUT" 2>/dev/null; then
+    fail=$((fail + 1)); printf 'FAIL the guard errored :: %s\n' "$2" >&2; cat "$ERR_OUT" >&2
+  elif [ "$got" = "$1" ]; then pass=$((pass + 1)); else
     fail=$((fail + 1)); printf 'FAIL want=%s got=%s :: %s\n' "$1" "$got" "$2" >&2
   fi
 }
@@ -774,6 +779,19 @@ case "$m7" in
   *"Blocked at least 3 times for the same reason in the last two minutes"*) pass=$((pass + 1)) ;;
   *) fail=$((fail + 1)); echo "FAIL loop breaker: count wording: $m7" >&2 ;;
 esac
+
+# --- Fail closed: a check that errors out (non-zero, no BLOCKED message) blocks,
+# and no project allow line can lift it. Simulated by replacing _sous_match.
+proj="$SANDBOX_DIR/proj2"; mkdir -p "$proj/.claude/hooks"
+printf 'allow other .*\nallow internal-error .*\n' >"$proj/.claude/hooks/sous.rules"
+for body in 'return 1' 'echo "partial"; return 2' 'printf "%s" "$undefined_var"; return 1'; do
+  out=$(cd "$proj" && CLAUDE_PROJECT_DIR="$proj" SOUS_LOG=off "$BASH" -c '. "$1"; eval "_sous_match() { $2; }"; sous_guard "ls"' _ "$HOOK" "$body" 2>/dev/null); rc=$?
+  case "$rc:$out" in
+    1:"BLOCKED (sous): the guard hit an internal error"*"[rule internal-error]"*) pass=$((pass + 1)) ;;
+    *) fail=$((fail + 1)); printf 'FAIL errored check must block (%s): rc=%s %s\n' "$body" "$rc" "$out" >&2 ;;
+  esac
+done
+rm "$proj/.claude/hooks/sous.rules"; rmdir "$proj/.claude/hooks" "$proj/.claude" "$proj"
 
 # --- Block rate: an allowed command leaves one byte in a per-day counter, never
 # its text, so `sous report` can say how often the guard fires.

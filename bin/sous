@@ -395,7 +395,7 @@ def guards_in(settings, root, plugin_root=None):
 
 
 # Guard rules the project rules file can never lift: the harness guarding itself.
-UNLIFTABLE_RULES = ("tamper", "sous-accept", "sous-record", "too-long")
+UNLIFTABLE_RULES = ("tamper", "sous-accept", "sous-record", "too-long", "internal-error")
 
 
 def project_rules(path):
