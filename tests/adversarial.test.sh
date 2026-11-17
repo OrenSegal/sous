@@ -37,6 +37,11 @@ check() { # $1 want, $2 command text
   # reason: the guard must read every corpus row without a bash error.
   if grep -q 'internal error checking' "$ERR_OUT" 2>/dev/null; then
     fail=$((fail + 1)); printf 'FAIL the guard errored :: %s\n' "$2" >&2; cat "$ERR_OUT" >&2
+    # Silent errors (a regex the host's regcomp rejects returns 2 with no message):
+    # show where the check stopped.
+    echo "--- last trace lines (bash -x):" >&2
+    jq -cn --arg c "$2" '{tool_input:{command:$c}}' |
+      (cd "$SANDBOX_DIR" && SOUS_LOG=off CLAUDE_TOOL_INPUT='' "$BASH" -x "$HOOK" 2>&1 >/dev/null) | tail -25 >&2
   elif [ "$got" = "$1" ]; then pass=$((pass + 1)); else
     fail=$((fail + 1)); printf 'FAIL want=%s got=%s :: %s\n' "$1" "$got" "$2" >&2
   fi
