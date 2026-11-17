@@ -22,107 +22,48 @@ All suites pass on bash 5 and on macOS `/bin/bash` 3.2. The one `install`
 failure on this host is the sandbox proxy returning 403 for `.invalid` where
 the test expects a DNS failure (exit 75); it is the environment, not the code.
 
-## Still open, smallest first
+## Second pass: every open item, addressed
 
-1. **Plugin-aware install** (`bfa39f7` parts 1-4, M). With the plugin on,
-   `/sous:install` copies a second guard and doctor then fails "guard runs 2
-   times". Port `--vendor`/`--unvendor`, `check --hook` with `systemMessage`,
-   and `${CLAUDE_PLUGIN_ROOT}/bin/sous` in `commands/*.md` and the reviewer:
-   `sous` is not on PATH in a plugin session, so every hint is a dead end.
-2. **Old installs never become fail-closed** (M). `upgrade` leaves a hook entry
-   without `onFailure: "block"`, and doctor does not flag it.
-3. **Hot path** (S). `cat` and `date` still run on every allowed call; use
-   `read -r -d ''` and `printf '%(%Y%m%d)T'` with a 3.2 fallback.
-4. **Load-sensitive budgets** (S). `install.test.sh` asserts 300 ms and doctor's
-   500 ms guard budget on wall clock; set `SOUS_GUARD_MS` in the test header and
-   keep one explicit over-budget row.
-5. **`tests-weakened` without `-M`** (S). A host with `diff.renames=false`
-   reports a moved test as a deletion.
-6. **Unpinned CI tools** (S). `pipx run ruff` and the Claude Code npm install.
-7. **Run the evals** (S, needs an API key). `claude plugin eval` already runs a
-   no-plugin baseline arm (`--ablation with-without` is the default), so the
-   control arm costs nothing to build. The cases were rebuilt on this branch
-   (see Evals below) but not run. Run
-   `claude plugin eval . --scaffold --allow-tools Bash --runs 3` once, record
-   the with/without delta in the README, then decide on a paid run per tag.
+| Item | Now |
+|---|---|
+| Plugin-aware install (`bfa39f7` parts 1-4) | ported: no guard copy with the plugin on, `--vendor`/`--unvendor`, `check --hook` systemMessage, commands and reviewer call `"${CLAUDE_PLUGIN_ROOT}/bin/sous"` |
+| Old installs fail open | doctor fails a guard hook without `onFailure: "block"`; `upgrade` sets it |
+| Hot path | no `cat` fork; no `date` fork on bash 4.2+ (3.2 keeps it) |
+| Load-sensitive budgets | `SOUS_GUARD_MS=5000` in the install suite, one explicit over-budget row |
+| `tests-weakened` without `-M` | diffs with `-M`; red-first row with `diff.renames=false` |
+| Unpinned CI tools | actions by SHA, ruff 0.17.4, pytest 9.2.0, Claude Code 2.1.322 |
+| Release from a red main | `release` calls the CI workflow first; write permission on the release job only |
+| Customization | `.claude/hooks/sous.rules` (project blocks, one-rule lifts), `--profile NAME`, knob table in `status`, README "Customize" |
+| Evals | 6 cases, all scaffolded, deterministic graders, baseline arm; `evals/RESULTS.md` |
 
-## Customization: what it takes today
+Owner decisions, taken as recommended (each is one revert if you disagree):
 
-| Want | Today | Gap |
-|---|---|---|
-| Silence one guard false positive in one project | edit `.claude/hooks/sous-guard.sh`; doctor then fails "stale (same version, edited)" and `upgrade` overwrites it. Plugin mode has no copy to edit | **no supported way** |
-| Add a project-specific block | write a wrapper hook that sources the guard (`. sous-guard.sh; sous_guard "$cmd" \|\| exit 2`, documented only in the guard header) | not in the README, and doctor runs its tables against the wrapper, so it must still pass them |
-| A stack profile (Node, Python, Rust, Docker) | `--ios` and `--strict` are hard-coded flags (`bin/sous` option table) | adding a profile is a code change |
-| Tune budgets and paths | 14 `SOUS_*` env vars, set per shell | no single list; not per project |
+- `gate --ack-blocks` and `probe --record` are user-only, like accept and
+  uninstall. `upgrade` stays open: it only adds, and now also fixes fail-open
+  hooks.
+- Loop breaker on the second identical block.
+- `Stop` hook runs receipts on the live transcript, warn only.
+- Rule-id column in the block log (fifth column) and in every block message.
+- Context meter in `sous status` (memory lines, skill description size, MCP
+  servers).
+- Egress: doctor names allowlisted hosts that accept uploads (info, not a
+  failure, since the base template allows `github.com`).
+- The Agent guard in the old checkout stays local.
 
-Proposed, smallest first:
+## Still open
 
-1. **Project rules file** `.claude/hooks/sous.rules`, read by the guard after
-   its own checks: `block <ERE> <message>` and `allow <rule-id> <ERE>` lines.
-   It lives under `.claude/hooks/`, so the template's `Edit(.claude/hooks/**)`
-   deny and the guard's tamper check already stop the agent writing it; only
-   the user can. `allow` needs the rule-id column (owner decision below) so it
-   lifts one rule, not the whole guard. Doctor lists every `allow` line and
-   requires a `check 0` row for it, so a widening is visible.
-2. **Profiles as files**: `--profile NAME` merges `templates/settings.NAME.json`;
-   `--ios`/`--strict` become aliases. A new stack is a JSON file plus an install
-   row, no Python.
-3. **One knob table**: `sous status` prints every `SOUS_*` value in effect and
-   its default, and the README lists them once.
-4. **README "Customize" section** with the three recipes above and the sourced
-   wrapper.
-
-## Evals
-
-Done on this branch, not run (no API key in this session):
-
-- Every case now has a `setup.sh` scaffold (`case.yaml`). Before, `rm -rf
-  vendor` ran in an empty workspace and `tests/test_cache.py` did not exist, so
-  the score barely depended on behavior.
-- Frontmatter matches the plugins in this repo: name, description, tags, `runs:
-  3`, `model`, `timeout_seconds`, `expected_outcome`, `plugins: ["../.."]`.
-- Deterministic graders next to the LLM ones: at most one recursive-delete
-  attempt (`tool_used`, both arms); the agent read the test file; the skill fired
-  (`with-only`, an indicator, not scored).
-- `test-audit-deletion` has a real trap: the flaky test is the only expiry test
-  and the fix is an injectable clock. The grader checks for that answer.
-- New case `prune-tests-evidence`: one test of each prune category plus two
-  that must stay, graded on the edits and one evidence line per deletion.
-- CI shellchecks the scaffolds, builds each one and runs its fixture tests, so
-  a fixture can't rot.
-
-Still missing:
-
-- Cases for the gate (`sous gate` on a branch that deleted a test), a secret
-  read (`cat .env` blocked, sandbox denies the rest), the accept and uninstall
-  blocks, and an injected instruction in a file the agent reads.
-- A results file in the repo (with/without score per case, date, model), so a
-  regression shows in a diff.
-- A file-state grader. The runner's grader types are `llm`, `regex` and
-  `tool_used`, so "vendor still exists" can only be judged by the LLM.
-
-## Rest of the repo, checked
-
-- `release.yml` publishes from a tag after checking the version and CHANGELOG,
-  but does not run the suites; a red main can still be tagged. Gate it on CI.
-- Actions are pinned by major tag (`@v7`); `dependabot.yml` exists, so pin by
-  SHA and let it bump them.
-- Not checked: `ISSUE_TEMPLATE`, the PR template, `mods/handoff`, and the five
-  plugins under `plugins/` beyond their evals.
-
-## Owner decisions
-
-- Should `gate --ack-blocks`, `probe --record` and `upgrade` be user-only?
-  They record the user's say-so and the agent can run them today.
-- Loop breaker on the second identical block, not the third (19 % of blocks
-  are a first retry).
-- A `Stop` hook running `receipts` on the live transcript (warn only).
-- Rule-id column in the block log, next to the redacted command that shipped.
-- Context meter in doctor (memory files, skill descriptions, MCP servers).
-- The uncommitted Agent guard in the old checkout (denies one subagent model):
-  a personal cost policy rather than harness safety; keep it local.
-- An egress check: doctor names allowlisted hosts that accept writes
-  (`github.com`, `*.githubusercontent.com`) and `allowUnsandboxedCommands`.
+1. **Run the evals** (needs an API key and money): the command is in
+   `evals/RESULTS.md`; record the with/without scores there. No grader has
+   been run against a model.
+2. **Quoted-pattern false positive.** `grep -E "a|bash" f` and
+   `grep 'a\|bash' f` block as pipe-to-shell: the quoted-span marking is
+   skipped whenever a shell name appears anywhere, which is what keeps
+   `sh -c "curl x | sh"` blocked. Narrowing it needs its own corpus work.
+   A project can lift it meanwhile with `allow shell-pipe <ERE>`.
+3. **A file-state grader.** The eval runner's grader types are `llm`, `regex`
+   and `tool_used`, so "vendor still exists" is judged by the LLM grader.
+4. Not reviewed: `ISSUE_TEMPLATE`, the PR template, `mods/handoff`, and the
+   five plugins under `plugins/` beyond their evals.
 
 ## From anthropics/defending-code-reference-harness
 

@@ -10,13 +10,23 @@ Agent = model + harness. sous covers the harness in five layers:
   5 gates        ask rules on push/commit/PR, bypass mode disabled
 
 Usage:
-  sous install   [DIR] [--ios] [--strict] [--dry-run]  merge sous into DIR/.claude (additive only)
-  sous upgrade   [DIR] [--ios] [--strict] [--dry-run]  same as install after updating sous: refreshes
+  sous install   [DIR] [--ios] [--strict] [--dry-run] [--vendor|--unvendor]
+                                                       merge sous into DIR/.claude (additive only); with the
+                                                       sous plugin on, the guard comes from the plugin and
+                                                       no copy is added (--vendor adds one anyway;
+                                                       --unvendor drops the copy sous recorded adding)
+  sous upgrade   [DIR] [--ios] [--strict] [--dry-run] [--vendor|--unvendor]
+                                                       same as install after updating sous: refreshes
                                                        the guard copy, adds new defaults, removes nothing
+                                                       unless --unvendor
   sous uninstall [DIR] [--dry-run]                     remove only what install recorded adding
   sous doctor    [DIR] [--ios] [--strict]              exit 1 if any layer is broken
   sous status    [DIR] [--ios] [--strict]              same checks, never fails, plus host info
-  sous check     [DIR]                                 one-line gap summary, silent when layers 3 and 5 are present
+  sous check     [DIR] [--hook]                        one-line gap summary and a stale-plugin notice, silent
+                                                       when all is well; --hook prints SessionStart JSON
+  sous check     --stop                                Stop hook: reads the hook JSON on stdin and warns the
+                                                       user when the final message claims a test result the
+                                                       transcript does not back (never blocks the stop)
   sous probe     [--record DIR]                        live red-team prompts for a fresh session;
                                                        --record notes that you ran them and they held
   sous accept    [DIR]                                 record the MCP servers and each enabled plugin's
@@ -93,6 +103,7 @@ HOOK_TESTS = [os.path.join(SOUS_ROOT, "tests", n) for n in ("sous-guard.test.sh"
 SKILLS_SRC = os.path.join(SOUS_ROOT, "skills")
 USER_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 INSTALLED_PLUGINS = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
+KNOWN_MARKETPLACES = os.path.expanduser("~/.claude/plugins/known_marketplaces.json")
 PROBES_FILE = os.path.expanduser("~/.claude/sous/probes.json")
 GUARD_MARKER = "BLOCKED (sous)"
 
@@ -866,7 +877,70 @@ def load_profile(name):
     return load(os.path.join(SOUS_ROOT, "templates", f"settings.{name}.json"))
 
 
-def install(root, ios, strict, dry_run, verb="install", profiles=()):
+def _version_tuple(v):
+    """(0, 3, 1) for "0.3.1"; None for anything that isn't dotted digits."""
+    return tuple(int(x) for x in v.split(".")) if isinstance(v, str) and re.fullmatch(r"\d+(\.\d+)*", v) else None
+
+
+def plugin_guard(root, layers):
+    """(name, install entry) of the first enabled sous plugin whose hooks run the
+    guard for root, or None. The plugin is the one copy that updates itself."""
+    for name, e in plugin_installs(root, layers):
+        ip = e["installPath"]
+        if name.split("@", 1)[0] == "sous" and guards_in(read_json_quiet(os.path.join(ip, "hooks", "hooks.json")),
+                                                         root, ip):
+            return name, e
+    return None
+
+
+def plugin_update_hint(name):
+    mkt = name.split("@", 1)[1] if "@" in name else name
+    return f"claude plugin marketplace update {mkt} && claude plugin update {name}"
+
+
+def unvendor(root, settings, notes):
+    """Drop the guard copy and hook entry sous recorded adding. Returns (manifest
+    or None, files to delete). Only what the manifest names goes; an edited copy
+    or a hook entry sous didn't add stays, with a note."""
+    mpath = os.path.join(root, ".claude", MANIFEST)
+    try:
+        m = read_json(mpath)[0] if os.path.isfile(mpath) else {}
+    except SettingsError as e:
+        notes.append(f"warn {e}; the project guard copy stays")
+        return None, []
+    hook_path = ["hooks", "PreToolUse"]
+    ops, dropped = [], False
+    for op in m.get("ops") or []:
+        val = _dict(op).get("value")
+        if op.get("op") == "item" and op.get("path") == hook_path and "sous-guard.sh" in json.dumps(val):
+            groups = _dict(settings.get("hooks")).get("PreToolUse")
+            if isinstance(groups, list) and val in groups:
+                groups.remove(val)
+                notes.append("remove hooks.PreToolUse entry for .claude/hooks/sous-guard.sh "
+                             "(the plugin runs the guard)")
+            dropped = True
+            continue
+        ops.append(op)
+    if not dropped:
+        notes.append("warn the project guard hook was not added by sous's manifest; remove it from hooks.PreToolUse "
+                     "by hand to run the guard once")
+    rel = ".claude/hooks/sous-guard.sh"
+    files, delete = dict(_dict(m.get("files"))), []
+    p = os.path.join(root, rel)
+    if os.path.isfile(p):
+        if rel in files and _sha(p) == files[rel]:
+            delete.append(p)
+            del files[rel]
+            notes.append(f"remove {rel}")
+        else:
+            notes.append(f"keep {rel} (not the copy sous recorded, or edited since)")
+    if not m:
+        return None, delete if dropped else []
+    m["ops"], m["files"] = ops, files
+    return m, delete
+
+
+def install(root, ios, strict, dry_run, verb="install", vendor=False, unvendor_copy=False, profiles=()):
     claude_dir = os.path.join(root, ".claude")
     settings_path = os.path.join(claude_dir, "settings.json")
     try:
@@ -879,17 +953,39 @@ def install(root, ios, strict, dry_run, verb="install", profiles=()):
     notes, ops = [], []
 
     user = read_json_quiet(USER_SETTINGS)
+    local = read_json_quiet(os.path.join(claude_dir, "settings.local.json"))
     # Project scope only: a guard in ~/.claude protects this host, not teammates.
     existing_guard = next(iter(guards_in(settings, root)), None)
+    # The plugin's guard updates with the plugin; a project copy drifts until
+    # someone reruns upgrade. So with the plugin on, sous adds no copy.
+    plugin = None if in_ci() or vendor else plugin_guard(root, [user, settings, local])
+    if unvendor_copy and not plugin:
+        print("sous: --unvendor needs the sous plugin enabled for this project, or nothing would run the guard.\n"
+              "      claude plugin install sous@sous, then rerun.", file=sys.stderr)
+        return 1
 
     template = load(os.path.join(SOUS_ROOT, "templates", "settings.base.json"))
     hook_dst = os.path.join(claude_dir, "hooks", "sous-guard.sh")
     # sous owns its copied guard, so a stale one is refreshed; a guard someone
     # vendored into their own hook elsewhere is theirs to sync.
-    refresh = os.path.isfile(hook_dst) and not filecmp.cmp(HOOK_SRC, hook_dst, shallow=False)
+    refresh = os.path.isfile(hook_dst) and not filecmp.cmp(HOOK_SRC, hook_dst, shallow=False) and not unvendor_copy
     if refresh:
         notes.append("update .claude/hooks/sous-guard.sh (stale copy)")
-    if existing_guard:
+    new_manifest, delete = None, []
+    if plugin:
+        template.pop("hooks", None)
+        name, entry = plugin
+        pv = entry.get("version") or guard_version(os.path.join(entry["installPath"], "hooks", "sous-guard.sh"))
+        notes.append(f"guard comes from plugin {name} {version_label(pv)}; no project copy "
+                     "(--vendor adds one for teammates without the plugin)")
+        if _version_tuple(pv) and _version_tuple(pv) < _version_tuple(SOUS_VERSION):
+            notes.append(f"warn plugin {name} is {pv}, this sous is {SOUS_VERSION}: {plugin_update_hint(name)}")
+        if unvendor_copy:
+            new_manifest, delete = unvendor(root, settings, notes)
+        elif existing_guard:
+            notes.append(f"warn {existing_guard} runs the guard too, so it runs twice per Bash call; "
+                         f"`sous {verb} --unvendor` drops the project copy and keeps the plugin's")
+    elif existing_guard:
         template.pop("hooks", None)
         notes.append(f"keep existing guard hook {existing_guard}")
     merge(settings, template, notes, ops=ops)
@@ -907,12 +1003,6 @@ def install(root, ios, strict, dry_run, verb="install", profiles=()):
     # Report, don't edit: removing someone's allow rule is not additive.
     for rule in allow_overlap(settings):
         notes.append(f"warn permissions.allow also holds {rule}; remove it from allow")
-    if not in_ci():
-        local = read_json_quiet(os.path.join(claude_dir, "settings.local.json"))
-        for name, ip in sous_plugins(root, [user, settings, local]):
-            if guards_in(read_json_quiet(os.path.join(ip, "hooks", "hooks.json")), root, ip):
-                notes.append(f"warn plugin {name} runs the guard too, so it would run twice per Bash call; "
-                             "`sous doctor` says how to keep one")
 
     skill_copies = []
     for name in sorted(os.listdir(SKILLS_SRC)):
@@ -949,7 +1039,11 @@ def install(root, ios, strict, dry_run, verb="install", profiles=()):
     mkdirs(claude_dir)
     if settings != before:
         write_json_atomic(settings_path, settings)
-    if refresh or not existing_guard:
+    if new_manifest is not None:
+        write_json_atomic(os.path.join(claude_dir, MANIFEST), new_manifest)
+    for p in delete:
+        os.unlink(p)
+    if refresh or not (existing_guard or plugin):
         mkdirs(os.path.dirname(hook_dst))
         tmp = hook_dst + ".sous-tmp"
         shutil.copy2(HOOK_SRC, tmp)
@@ -968,7 +1062,7 @@ def install(root, ios, strict, dry_run, verb="install", profiles=()):
     if not bypass_disabled(user):
         print('  next: add "disableBypassPermissionsMode": "disable" under permissions in ~/.claude/settings.json')
         print("        (sous never edits user scope; bypass mode skips every ask gate above)")
-    print("  next: restart Claude Code (or /hooks) so the new settings load, then run: sous doctor")
+    print(f"  next: restart Claude Code (or /hooks) so the new settings load, then run: {sous_cmd()} doctor")
     return 0
 
 
@@ -1577,11 +1671,21 @@ def doctor(root, ios, strict, mode, profiles=()):
             guards.append((p, where))
     if len(guards) > 1:
         plugin_names = [w.split(" ", 1)[1] for _, w in guards if w.startswith("plugin ")]
-        fix = ("keep one: to keep the project copy (teammates get it), add "
-               f'{{"enabledPlugins": {{"{plugin_names[0]}": false}}}} to .claude/settings.local.json '
-               "(this also turns off the plugin's SessionStart check); to keep the plugin, remove the "
-               "sous-guard entry from hooks.PreToolUse in .claude/settings.json") if plugin_names \
-            else "keep one: remove the extra PreToolUse entries"
+        wheres = {w for _, w in guards}
+        if plugin_names:
+            # Keep the plugin's: it is the copy that updates itself.
+            steps = []
+            if "project" in wheres:
+                steps.append(f"`{sous_cmd()} upgrade {shlex.quote(root)} --unvendor` drops the project copy "
+                             "(teammates then need the plugin)")
+            if "user settings" in wheres:
+                steps.append("remove the sous guard from your user PreToolUse hook in ~/.claude "
+                             f"({', '.join(p for p, w in guards if w == 'user settings')})")
+            fix = ("keep the plugin's, which updates itself: " + "; ".join(steps)
+                   + f'. To keep a copy instead, add {{"enabledPlugins": {{"{plugin_names[0]}": false}}}} '
+                   "to .claude/settings.local.json (this also turns off the plugin's SessionStart check)")
+        else:
+            fix = "keep one: remove the extra PreToolUse entries"
         r.bad(f"the guard runs {len(guards)} times per Bash call ("
               + "; ".join(f"{w}: {p}" for p, w in guards) + f"); {fix}")
     for p, where in guards:
@@ -1724,32 +1828,101 @@ def doctor(root, ios, strict, mode, profiles=()):
     return 0
 
 
-def check(root):
-    """Fast path for the SessionStart hook: presence of layers 3 and 5 only.
+def sous_cmd():
+    """How to call this sous in a printed hint: `sous` when that name on PATH is
+    this file, else its full path (a plugin's bin/ is not always on PATH)."""
+    me = os.path.join(SOUS_ROOT, "bin", "sous")
+    found = shutil.which("sous")
+    return "sous" if found and os.path.realpath(found) == os.path.realpath(me) else shlex.quote(me)
 
-    Reads two small JSON files and runs no test tables, so it stays cheap. It
-    is silent when nothing is missing and never fails the session."""
+
+STALE_MARKETPLACE_DAYS = 14
+
+
+def plugin_staleness():
+    """One line when this sous runs from a plugin install and a newer release is
+    known, or its marketplace clone is too old to know. None otherwise. Local
+    files only: a SessionStart hook must not wait on the network."""
+    me = os.path.realpath(SOUS_ROOT)
+    name = None
+    for n, entries in _dict(read_json_quiet(INSTALLED_PLUGINS).get("plugins")).items():
+        for e in entries if isinstance(entries, list) else []:
+            ip = _dict(e).get("installPath")
+            if isinstance(ip, str) and os.path.realpath(ip) == me:
+                name = n
+    if not name or "@" not in name:
+        return None
+    plugin, mkt = name.split("@", 1)
+    known = _dict(read_json_quiet(KNOWN_MARKETPLACES).get(mkt))
+    loc, newest = known.get("installLocation"), None
+    if isinstance(loc, str):
+        for p in _dict(read_json_quiet(os.path.join(loc, ".claude-plugin", "marketplace.json"))).get("plugins") or []:
+            if _dict(p).get("name") == plugin:
+                newest = p.get("version")
+    mine, theirs = _version_tuple(SOUS_VERSION), _version_tuple(newest)
+    if mine and theirs and theirs > mine:
+        return f"sous {SOUS_VERSION} is installed and {newest} is out: {plugin_update_hint(name)}"
+    import datetime  # only this path needs it; check() is on the SessionStart clock
+    updated = known.get("lastUpdated")
+    try:
+        when = datetime.datetime.fromisoformat(updated.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+    days = int((time.time() - when) // 86400)
+    if days > STALE_MARKETPLACE_DAYS:
+        return (f"sous {SOUS_VERSION}: the {mkt} marketplace was last refreshed {days} days ago, so a newer "
+                f"release would not show here: {plugin_update_hint(name)}")
+    return None
+
+
+def check(root, hook=False):
+    """Fast path for the SessionStart hook: presence of layers 3 and 5, and
+    whether this plugin install is behind.
+
+    Reads a few small JSON files and runs no test tables, so it stays cheap. It
+    is silent when nothing is missing and never fails the session. With hook,
+    it prints SessionStart JSON: plain stdout there reaches only the agent, so
+    the user would never see the line."""
+    lines = []
+    install = "/sous:install" if hook else f"`{sous_cmd()} install`"
+    doctor = "/sous:doctor" if hook else f"`{sous_cmd()} doctor`"
     path = os.path.join(root, ".claude", "settings.json")
+    # A folder with no repo and no .claude is not a project to harden (a scratch dir).
+    project = any(os.path.exists(os.path.join(root, n)) for n in (".git", ".claude"))
     try:
         s = read_json(path)[0]
     except SettingsError as e:
+        s = None
         if os.path.exists(path):
-            print(f"sous: {e}. Run `sous doctor` for detail.")
-        else:
-            print(f"sous: no project permissions or sandbox in {root}. Run `sous install` (a plugin can't set them).")
+            lines.append(f"sous: {e}. Run {doctor} for detail.")
+        elif project:
+            lines.append(f"sous: no project permissions or sandbox in {root}. Run {install} (a plugin can't set them).")
+    if s is not None:
+        perm, sb = _dict(s.get("permissions")), _dict(s.get("sandbox"))
+        gaps = []
+        if missing(REQUIRED_DENY, perm.get("deny")):
+            gaps.append("deny rules")
+        if sb.get("enabled") is not True:
+            gaps.append("sandbox")
+        if missing(REQUIRED_ASK, perm.get("ask")):
+            gaps.append("ask gates")
+        if not bypass_disabled(read_json_quiet(USER_SETTINGS)):
+            gaps.append("bypass mode still allowed in ~/.claude/settings.json")
+        if gaps:
+            lines.append("sous: missing " + ", ".join(gaps) + f". Run {doctor} for detail, {install} to fix.")
+    stale = plugin_staleness()
+    if stale:
+        lines.append(stale)
+    if not lines:
         return 0
-    perm, sb = _dict(s.get("permissions")), _dict(s.get("sandbox"))
-    gaps = []
-    if missing(REQUIRED_DENY, perm.get("deny")):
-        gaps.append("deny rules")
-    if sb.get("enabled") is not True:
-        gaps.append("sandbox")
-    if missing(REQUIRED_ASK, perm.get("ask")):
-        gaps.append("ask gates")
-    if not bypass_disabled(read_json_quiet(USER_SETTINGS)):
-        gaps.append("bypass mode still allowed in ~/.claude/settings.json")
-    if gaps:
-        print("sous: missing " + ", ".join(gaps) + ". Run `sous doctor` for detail, `sous install` to fix.")
+    text = "\n".join(lines)
+    if hook:
+        print(json.dumps({"systemMessage": text, "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": text + "\nsous: mention this to the user once; /sous:install previews every "
+                                        "change before applying it. Don't run an install or update unasked."}}))
+    else:
+        print(text)
     return 0
 
 
@@ -2188,6 +2361,25 @@ def claims_in(text, pattern):
     return out
 
 
+def check_stop():
+    """Stop hook: the receipts check on the live transcript, as a warning the user
+    sees. Exit 0 always: a stop is never blocked, so a false alarm costs a line."""
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    path = data.get("transcript_path") if isinstance(data, dict) else None
+    if not isinstance(path, str) or not os.path.isfile(path):
+        return 0
+    try:
+        status, msg, fix = receipts(path)
+    except OSError:
+        return 0
+    if status in ("fail", "warn"):
+        print(json.dumps({"systemMessage": f"sous receipts: {msg}; {fix}."}))
+    return 0
+
+
 def receipts(path):
     calls, results, final = [], {}, ""
     with open(path, errors="replace") as f:
@@ -2336,12 +2528,12 @@ def fleet(cwd, base, as_json):
 # Options each command accepts; a value-taking option is spelled --name=value
 # or --name value.
 OPTIONS = {
-    "install": {"--ios", "--strict", "--dry-run", "--profile="},
-    "upgrade": {"--ios", "--strict", "--dry-run", "--profile="},
+    "install": {"--ios", "--strict", "--dry-run", "--profile=", "--vendor", "--unvendor"},
+    "upgrade": {"--ios", "--strict", "--dry-run", "--profile=", "--vendor", "--unvendor"},
     "uninstall": {"--dry-run"},
     "doctor": {"--ios", "--strict", "--profile="},
     "status": {"--ios", "--strict", "--profile="},
-    "check": set(),
+    "check": {"--hook", "--stop"},
     "probe": {"--record"},
     "accept": set(),
     "report": {"--days="},
@@ -2400,13 +2592,18 @@ def main(argv):
     strict = bool(opts.get("--strict")) or "strict" in profiles
     extra = [n for n in profiles if n not in ("ios", "strict")]
     if cmd in ("install", "upgrade"):
-        return install(root, ios, strict, bool(opts.get("--dry-run")), cmd, extra)
+        if opts.get("--vendor") and opts.get("--unvendor"):
+            return usage("--vendor and --unvendor are opposites; pass one")
+        return install(root, ios, strict, bool(opts.get("--dry-run")), cmd, bool(opts.get("--vendor")),
+                       bool(opts.get("--unvendor")), extra)
     if cmd == "uninstall":
         return uninstall(root, bool(opts.get("--dry-run")))
     if cmd in ("doctor", "status"):
         return doctor(root, ios, strict, cmd, extra)
     if cmd == "check":
-        return check(root)
+        if opts.get("--stop"):
+            return check_stop()
+        return check(root, bool(opts.get("--hook")))
     if cmd == "lint":
         return lint(root, bool(opts.get("--fix")), bool(opts.get("--dry-run")))
     if cmd == "gate":

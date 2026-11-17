@@ -20,8 +20,8 @@ The capture above is the real output of `bash docs/demo.sh`, rendered by
 
 | Threat | Control | Proof (run it) |
 |---|---|---|
-| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 18 rules, each with a block and an allow fixture (`bash tests/rules.test.sh` prints `18 rules, 57 passed`: two rows per rule plus one check per guard message); red-team corpus (`bash tests/adversarial.test.sh` prints `532 passed`: 314 spellings it must block, 182 it must let through, 36 timing, log and loop-breaker checks) |
-| Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 18 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same corpus |
+| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 19 rules, each with a block and an allow fixture (`bash tests/rules.test.sh` prints `19 rules, 79 passed`: three checks per rule (block, allow, rule id) plus one per guard message); red-team corpus (`bash tests/adversarial.test.sh` prints `551 passed`: 326 spellings it must block, 188 it must let through, 37 timing, log, loop-breaker and project-rule checks) |
+| Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 19 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same corpus |
 | Fake-green tests (the run passed but executed nothing) | `tests-ran`, and `sous gate --test-log` | 53 test-log cases (`bash tests/tests-ran.test.sh`) |
 | Weakened tests (deleted, skipped, loosened assertion, early `return`) | `tests-weakened`, and `sous gate` | 56 cases (`bash tests/tests-weakened.test.sh`) |
 | Plugin drift (a plugin changes a hook script without bumping its version) | `sous accept` records each plugin's surface; `sous doctor` and `sous gate` name what changed | 16 drift checks in `tests/install.test.sh` |
@@ -115,15 +115,15 @@ Real output from `bash docs/demo.sh`, which feeds each command to the guard:
 
 ```text
 $ /bin/rm -rf src
-BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user.
+BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user. [rule rm-recursive]
   exit 2
 
 $ git -C . push -f origin main
-BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it.
+BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it. [rule push-force]
   exit 2
 
 $ sh -c 'cat .env'
-BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names.
+BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names. [rule env-file]
   exit 2
 
 $ git status && ls src
@@ -253,12 +253,33 @@ servers in `~/.claude.json` are not covered.
 
 ## Install
 
+The plugin is the guard, and it updates itself. Install it once, then let it
+set up each project:
+
+```bash
+claude plugin marketplace add OrenSegal/sous
+claude plugin install sous@sous
+```
+
+Then, in a session in the project, run `/sous:install`. It shows the changes
+first and applies them only on a yes. With the plugin on, `install` adds no
+copy of the guard to the project, so there is one guard and its version is
+the plugin's. The plugin's `SessionStart` check says when a project lacks the
+settings, and when the installed plugin is behind a newer release.
+
+Without the plugin, or to commit a guard copy for teammates who don't have
+it, use a clone and `--vendor`:
+
 ```bash
 git clone https://github.com/OrenSegal/sous ~/.sous
 ~/.sous/bin/sous install /path/to/project --dry-run   # see what changes
-~/.sous/bin/sous install /path/to/project
+~/.sous/bin/sous install /path/to/project --vendor
 ~/.sous/bin/sous doctor  /path/to/project
 ```
+
+A project that already has a copy and now has the plugin runs the guard twice;
+`doctor` fails on that. `sous upgrade /path/to/project --unvendor` drops the
+copy and the hook entry sous recorded adding, and keeps an edited copy.
 
 `install` is additive: lists gain missing entries, existing values are kept and
 reported. It reads JSON with comments but won't rewrite it, writes atomically,
@@ -273,12 +294,16 @@ gate:
 For unattended runs add `--strict`: a command the sandbox blocks then fails
 instead of retrying outside it (`sandbox.allowUnsandboxedCommands: false`).
 
-The plugin carries the guard hook, a `SessionStart` check that is silent when
-layers 3 and 5 are present, `/sous:install`, `/sous:doctor`, `/sous:report`,
-the `sous-reviewer` agent, `test-audit`, `prune-tests` and `tests-ran` (its `bin/` goes on
-PATH). A plugin can't set permissions or the sandbox, so run `/sous:install`
-once per project. If the project also has the copied guard, the guard runs
-twice; `sous doctor` fails on that and says how to keep one.
+The plugin carries the guard hook, a `SessionStart` check, `/sous:install`,
+`/sous:doctor`, `/sous:report`, the `sous-reviewer` agent, `test-audit`,
+`prune-tests` and `tests-ran`. Its commands call the plugin's own `bin/sous`,
+so they work whether or not `bin/` is on your PATH. The check is silent when
+layers 3 and 5 are present and the plugin is current, and says nothing in a
+folder with no `.git` or `.claude`. A plugin can't set permissions or the
+sandbox, so run `/sous:install` once per project. With the plugin on,
+`install` adds no guard copy, since the plugin's guard updates itself;
+`--vendor` adds one for teammates without the plugin, and `--unvendor` drops a
+copy sous added earlier.
 
 ### Upgrade and uninstall
 
@@ -296,6 +321,50 @@ manifest, so `uninstall` refuses there. Either remove by hand what
 [`templates/`](templates) lists plus `.claude/hooks/sous-guard.sh` and
 `.claude/skills/test-audit`, or run `sous upgrade` first; `uninstall` then
 removes what that upgrade added.
+
+## Customize
+
+**Lift one rule for one command, in one project.** Put the line in
+`.claude/hooks/sous.rules`. The template's `Edit(.claude/hooks/**)` deny rule
+and the guard's tamper check keep the agent from writing that file, so only you
+can.
+
+```
+# block <name> <ERE>      block what the ERE finds anywhere in a command
+# allow <rule-id> <ERE>   lift guard rule <rule-id> when the ERE matches the whole command
+block deploy-prod   (^|[;&|[:space:]])make[[:space:]]+deploy-prod
+allow rm-recursive  rm -rf (vendor|tmp/cache)
+```
+
+Every block message ends with its rule id, for example `[rule rm-recursive]`,
+and `sous report` lists it next to each blocked command. Four rules guard the
+harness itself and never lift: `tamper`, `sous-accept`, `sous-record` and
+`too-long`. Doctor lists each `allow` line and fails on a line the guard would
+skip: a bad shape, an ERE bash can't compile, or an attempt to lift one of those
+four. The file works the same for the plugin and for a copied guard.
+
+For a fix every project should get, add a `check 0` row to
+`tests/adversarial.test.sh` and narrow the rule upstream.
+
+**Add your own checks in code.** Source the guard from your own hook and run
+your checks after it: `. sous-guard.sh; sous_guard "$cmd" || exit 2`. Doctor
+runs its tables against the hook Claude Code calls, so the wrapper must still
+pass them.
+
+**Stack profiles.** `sous install --profile NAME[,NAME]` merges
+`templates/settings.NAME.json` on top of the base. The profiles are:
+- `ios`, the same as `--ios`;
+- `strict`, the same as `--strict`;
+- `publish`, which denies npm, PyPI, crates, gems, Docker and GitHub release
+  publishing.
+
+A new profile is one JSON file. `sous doctor --profile NAME` checks the
+profile's deny rules.
+
+**Knobs.** `sous status` prints every `SOUS_*` variable in effect, with its
+default: `SOUS_LOG`, `SOUS_GUARD_MS`, `SOUS_MEMORY_LINES`, `SOUS_TEST_LOG` and
+`SOUS_TABLE_CACHE`. The guard's size limits are constants in the guard, not
+environment variables, so an agent can't raise them.
 
 ## Doctor, report, probe
 
@@ -353,6 +422,10 @@ never finished; a claim with no test command in the transcript only warns (a
 wrapper script may have run them). It reads Claude Code's transcript format,
 which is not published, and only recognises common test runners and plain
 claims; a hedged or unusual claim passes unchecked.
+
+The plugin runs the same check at the end of every turn (a `Stop` hook,
+`sous check --stop`). When the final message claims a test result the
+transcript doesn't back, you see a one-line warning. It never blocks the stop.
 
 `sous fleet [DIR]` lists every worktree of the repo, read-only: branch,
 dirty, ahead/behind the base, how many tests the last log ran, guard blocks

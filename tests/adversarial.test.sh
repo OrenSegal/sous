@@ -429,6 +429,12 @@ case "$msg" in *"project rule deploy-prod"*"[rule project:deploy-prod]"*) pass=$
   *) fail=$((fail + 1)); printf 'FAIL project block message: %s\n' "$msg" >&2 ;; esac
 rm "$proj/.claude/hooks/sous.rules"; rmdir "$proj/.claude/hooks" "$proj/.claude" "$proj"
 
+# Plugin commands spell sous as a quoted plugin-root path; quotes must not hide it.
+check 2 '"${CLAUDE_PLUGIN_ROOT}/bin/sous" accept .'
+check 2 "'/opt/sous/bin/sous' uninstall ."
+check 2 '"${CLAUDE_PLUGIN_ROOT}"/bin/sous probe --record .'
+check 0 '"${CLAUDE_PLUGIN_ROOT}/bin/sous" doctor .'
+
 # --- sous uninstall switches the harness off: also the user's word.
 check 2 'sous uninstall .'
 check 2 'python3 ~/.sous/bin/sous uninstall'

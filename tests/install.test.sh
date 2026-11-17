@@ -125,7 +125,8 @@ expect "report runs" 0 python3 "$SOUS" report
 # SessionStart fast path: speaks only when a layer is missing, never fails.
 # HOME is faked so the real ~/.claude/settings.json is not under test.
 mkdir -p "$WORK/home/.claude"
-expect "check on a bare project speaks" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "Run .sous install."' _ "$WORK/home" "$SOUS" "$WORK/bare"
+mkdir -p "$WORK/bare/.git"  # a repo with no .claude: a project to harden
+expect "check on a bare project speaks" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "Run .*sous.* install"' _ "$WORK/home" "$SOUS" "$WORK/bare"
 expect "check flags bypass mode when installed" 0 sh -c 'HOME="$1" python3 "$2" check "$3" | grep -q "bypass mode still allowed"' _ "$WORK/home" "$SOUS" "$p1"
 printf '{"permissions":{"disableBypassPermissionsMode":"disable"}}\n' > "$WORK/home/.claude/settings.json"
 expect "check is silent when every layer is present" 0 sh -c '[ -z "$(HOME="$1" python3 "$2" check "$3")" ]' _ "$WORK/home" "$SOUS" "$p1"
@@ -194,7 +195,7 @@ p10="$WORK/with space"; mkdir -p "$p10"
 expect "install into a path with spaces" 0 python3 "$SOUS" install "$p10"
 expect "doctor on a path with spaces" 0 python3 "$SOUS" doctor "$p10"
 sethook() { python3 -c 'import json,sys
-p,cmd,matcher=sys.argv[1:]; d=json.load(open(p)); g={"hooks":[{"type":"command","command":cmd}]}
+p,cmd,matcher=sys.argv[1:]; d=json.load(open(p)); g={"hooks":[{"type":"command","command":cmd,"onFailure":"block"}]}
 if matcher != "-": g["matcher"]=matcher
 d["hooks"]["PreToolUse"]=[g]; json.dump(d,open(p,"w"),indent=2)' "$@"; }
 sethook "$p10/.claude/settings.json" ".claude/hooks/sous-guard.sh" Bash
@@ -461,7 +462,7 @@ printf '{"enabledPlugins": {"sous@sous": true}, "permissions": {"disableBypassPe
 printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"}]}}\n' "$(cd "$HERE/.." && pwd)" > "$h3/.claude/plugins/installed_plugins.json"
 expect "plugin + project guard fails" 1 env -u CI -u GITHUB_ACTIONS HOME="$h3" python3 "$SOUS" doctor "$p1"
 expect "double guard names the fix" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" doctor "$3" | grep -q "runs 2 times per Bash call.*enabledPlugins"' _ "$h3" "$SOUS" "$p1"
-expect "install warns about the double guard" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" install "$3" --dry-run | grep -q "warn plugin sous@sous runs the guard too"' _ "$h3" "$SOUS" "$p1"
+expect "install warns about the double guard" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" install "$3" --dry-run | grep -q "runs the guard too, so it runs twice.*--unvendor"' _ "$h3" "$SOUS" "$p1"
 printf '{"enabledPlugins": {"sous@sous": false}}\n' > "$p1/.claude/settings.local.json"
 expect "plugin off for this project: one guard" 0 env -u CI -u GITHUB_ACTIONS HOME="$h3" python3 "$SOUS" doctor "$p1"
 rm "$p1/.claude/settings.local.json"
@@ -474,6 +475,57 @@ mkdir -p "$WORK/badplugin/hooks"
 printf '{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "\\"${CLAUDE_PLUGIN_ROOT}\\"/bin/gone"}]}]}}\n' > "$WORK/badplugin/hooks/hooks.json"
 printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"}]}}\n' "$WORK/badplugin" > "$h3/.claude/plugins/installed_plugins.json"
 expect "plugin hooks.json pointing at a missing file is named" 0 sh -c 'env -u CI -u GITHUB_ACTIONS HOME="$1" python3 "$2" doctor "$3" | grep -q "plugin sous@sous: SessionStart hook points at missing"' _ "$h3" "$SOUS" "$p1"
+
+# One guard source: with the plugin on, install adds no project copy.
+repo="$(cd "$HERE/.." && pwd)"
+plug() { printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"%s}]}}\n' "$repo" "${1:-}" > "$h3/.claude/plugins/installed_plugins.json"; }
+asplug() { env -u CI -u GITHUB_ACTIONS HOME="$h3" python3 "$SOUS" "$@"; }
+says() { # $1 pattern, rest = sous args run as the plugin user
+  local pat="$1"; shift; asplug "$@" | grep -q "$pat"; }
+plug
+v1="$WORK/viaplugin"; mkdir -p "$v1"
+expect "install with the plugin names it" 0 says "guard comes from plugin sous@sous" install "$v1"
+expect "no project guard copy" 1 test -e "$v1/.claude/hooks/sous-guard.sh"
+expect "no project hook entry" 0 python3 -c 'import json,sys; assert "hooks" not in json.load(open(sys.argv[1]))' "$v1/.claude/settings.json"
+expect "doctor passes on the plugin's guard alone" 0 asplug doctor "$v1"
+expect "uninstall after a plugin install" 0 asplug uninstall "$v1"
+v2="$WORK/vendored"; mkdir -p "$v2"
+expect "--vendor still copies" 0 asplug install "$v2" --vendor
+expect "--vendor copy exists" 0 test -x "$v2/.claude/hooks/sous-guard.sh"
+expect "--vendor and --unvendor together" 64 asplug install "$v2" --vendor --unvendor
+expect "--unvendor drops sous's copy" 0 asplug upgrade "$v2" --unvendor
+expect "copy gone" 1 test -e "$v2/.claude/hooks/sous-guard.sh"
+expect "hook entry gone, manifest no longer lists it" 0 python3 -c '
+import json,sys; s=json.load(open(sys.argv[1])); m=json.load(open(sys.argv[2]))
+assert "sous-guard.sh" not in json.dumps(s.get("hooks", {}))
+assert ".claude/hooks/sous-guard.sh" not in m["files"]
+assert "sous-guard.sh" not in json.dumps(m["ops"])' "$v2/.claude/settings.json" "$v2/.claude/sous.manifest.json"
+expect "doctor after unvendor: one guard" 0 asplug doctor "$v2"
+expect "uninstall after unvendor" 0 asplug uninstall "$v2"
+v3="$WORK/vendored-edited"; mkdir -p "$v3"
+asplug install "$v3" --vendor >/dev/null; echo "# mine" >> "$v3/.claude/hooks/sous-guard.sh"
+expect "--unvendor keeps an edited copy" 0 says "keep .claude/hooks/sous-guard.sh" upgrade "$v3" --unvendor
+expect "edited copy still there" 0 test -f "$v3/.claude/hooks/sous-guard.sh"
+expect "--unvendor without the plugin refuses" 1 python3 "$SOUS" upgrade "$v3" --unvendor
+plug ', "version": "0.1.0"'
+expect "an older plugin is named with the update command" 0 says "plugin sous@sous is 0.1.0.*claude plugin update sous@sous" install "$v1" --dry-run
+
+# SessionStart: JSON the user sees, silence outside a project, stale plugin named.
+c1="$WORK/check-proj"; mkdir -p "$c1/.git"
+expect "hook output is JSON with a user message" 0 sh -c 'env -u CI HOME="$1" python3 "$2" check --hook "$3" | python3 -c "import json,sys; d=json.load(sys.stdin); assert \"/sous:install\" in d[\"systemMessage\"]; assert d[\"hookSpecificOutput\"][\"hookEventName\"] == \"SessionStart\""' _ "$WORK/emptyhome" "$SOUS" "$c1"
+c2="$WORK/check-scratch"; mkdir -p "$c2"
+expect "a folder that is not a project gets no nag" 0 sh -c '[ -z "$(env -u CI HOME="$1" python3 "$2" check --hook "$3")" ]' _ "$WORK/emptyhome" "$SOUS" "$c2"
+now_iso() { python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).isoformat())'; }
+h5="$WORK/home5"; mkdir -p "$h5/.claude/plugins" "$WORK/mkt5/.claude-plugin"
+printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"}]}}\n' "$repo" > "$h5/.claude/plugins/installed_plugins.json"
+printf '{"sous": {"installLocation": "%s", "lastUpdated": "%s"}}\n' "$WORK/mkt5" "$(now_iso)" > "$h5/.claude/plugins/known_marketplaces.json"
+printf '{"name": "sous", "plugins": [{"name": "sous", "version": "99.0.0"}]}\n' > "$WORK/mkt5/.claude-plugin/marketplace.json"
+expect "a newer release in the marketplace is named" 0 sh -c 'env -u CI HOME="$1" python3 "$2" check "$3" | grep -q "and 99.0.0 is out: claude plugin marketplace update sous && claude plugin update sous@sous"' _ "$h5" "$SOUS" "$c2"
+printf '{"name": "sous", "plugins": [{"name": "sous", "version": "0.0.1"}]}\n' > "$WORK/mkt5/.claude-plugin/marketplace.json"
+printf '{"sous": {"installLocation": "%s", "lastUpdated": "2020-01-01T00:00:00.000Z"}}\n' "$WORK/mkt5" > "$h5/.claude/plugins/known_marketplaces.json"
+expect "an old marketplace clone is named" 0 sh -c 'env -u CI HOME="$1" python3 "$2" check "$3" | grep -q "marketplace was last refreshed [0-9]* days ago"' _ "$h5" "$SOUS" "$c2"
+printf '{"sous": {"installLocation": "%s", "lastUpdated": "%s"}}\n' "$WORK/mkt5" "$(now_iso)" > "$h5/.claude/plugins/known_marketplaces.json"
+expect "a current plugin says nothing" 0 sh -c '[ -z "$(env -u CI HOME="$1" python3 "$2" check "$3")" ]' _ "$h5" "$SOUS" "$c2"
 
 # Uninstall removes exactly what the manifest says install added.
 same_json() { python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' "$@"; }

@@ -1,8 +1,8 @@
 ---
 description: Check that all five sous layers hold in this project and say what to fix
-allowed-tools: Bash(sous doctor:*), Bash(sous status:*)
+allowed-tools: Bash(sous doctor:*), Bash(sous status:*), Bash("${CLAUDE_PLUGIN_ROOT}/bin/sous" doctor:*), Bash("${CLAUDE_PLUGIN_ROOT}/bin/sous" status:*)
 ---
 
-Run `sous doctor` in the project root. Show the failing lines verbatim, then for each
+Run `"${CLAUDE_PLUGIN_ROOT}/bin/sous" doctor` in the project root. Show the failing lines verbatim, then for each
 failure give the one command or settings line that fixes it. Do not edit settings
 files yourself; `/sous:install` is the path that changes them.
