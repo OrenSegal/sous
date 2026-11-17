@@ -12,17 +12,17 @@ text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:
 <text x="400" y="21" text-anchor="middle" class="dim">bash docs/demo.sh</text>
 <text x="20" y="66" class="l cmd" style="animation-delay:0.00s"><tspan class="p">$</tspan><tspan class="cmd"> /bin/rm -rf src</tspan></text>
 <text x="20" y="86" class="l block" style="animation-delay:0.35s">BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the</text>
-<text x="20" y="106" class="l block" style="animation-delay:0.70s">  user.</text>
+<text x="20" y="106" class="l block" style="animation-delay:0.70s">  user. [rule rm-recursive]</text>
 <text x="20" y="126" class="l dim" style="animation-delay:1.05s">  exit 2</text>
 <text x="20" y="146" class="l dim" style="animation-delay:1.40s"></text>
 <text x="20" y="166" class="l cmd" style="animation-delay:1.75s"><tspan class="p">$</tspan><tspan class="cmd"> git -C . push -f origin main</tspan></text>
 <text x="20" y="186" class="l block" style="animation-delay:2.10s">BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves</text>
-<text x="20" y="206" class="l block" style="animation-delay:2.45s">  with ! if they want it.</text>
+<text x="20" y="206" class="l block" style="animation-delay:2.45s">  with ! if they want it. [rule push-force]</text>
 <text x="20" y="226" class="l dim" style="animation-delay:2.80s">  exit 2</text>
 <text x="20" y="246" class="l dim" style="animation-delay:3.15s"></text>
 <text x="20" y="266" class="l cmd" style="animation-delay:3.50s"><tspan class="p">$</tspan><tspan class="cmd"> sh -c 'cat .env'</tspan></text>
 <text x="20" y="286" class="l block" style="animation-delay:3.85s">BLOCKED (sous): the command names .env or a variant, a secrets file. Read</text>
-<text x="20" y="306" class="l block" style="animation-delay:4.20s">  .env.example for the key names.</text>
+<text x="20" y="306" class="l block" style="animation-delay:4.20s">  .env.example for the key names. [rule env-file]</text>
 <text x="20" y="326" class="l dim" style="animation-delay:4.55s">  exit 2</text>
 <text x="20" y="346" class="l dim" style="animation-delay:4.90s"></text>
 <text x="20" y="366" class="l cmd" style="animation-delay:5.25s"><tspan class="p">$</tspan><tspan class="cmd"> git status &amp;&amp; ls src</tspan></text>

@@ -292,5 +292,14 @@ expect "an edit after the last test run warns, not fails" 0 receipts
 seen "the warning names the edit" "warn +receipts.*after the last test run"
 expect "a missing transcript is a usage error" 64 gate --transcript="$WORK/nope.jsonl"
 
+# --- Stop hook: the same check on the live transcript, as a warning the user sees.
+stop() { printf '{"transcript_path":"%s","stop_hook_active":false}' "$J" | python3 "$SOUS" check --stop; }
+: >"$J"; use t1 Bash "pytest -q"; res t1 'Exit code 1\n1 failed' ',"is_error":true'; say "Fixed. All green."
+expect "stop hook never blocks, even on a false claim" 0 stop
+expect "stop hook warns the user on a false claim" 0 sh -c "$(declare -f stop); J='$J'; SOUS='$SOUS'; stop | jq -e '.systemMessage | test(\"exited 1\")'"
+: >"$J"; use t1 Bash "pytest -q"; res t1 '3 passed in 0.1s' ''; say "All tests pass."
+expect "stop hook is silent when the claim holds" 0 sh -c "$(declare -f stop); J='$J'; SOUS='$SOUS'; [ -z \"\$(stop)\" ]"
+expect "stop hook ignores bad input" 0 sh -c 'printf "not json" | python3 "$1" check --stop' _ "$SOUS"
+
 printf 'gate: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

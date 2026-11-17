@@ -18,7 +18,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sous check \"${CLAUDE_PROJECT_DIR:-.}\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sous check --hook \"${CLAUDE_PROJECT_DIR:-.}\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/sous check --stop",
+            "timeout": 10
           }
         ]
       }

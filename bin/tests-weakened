@@ -185,7 +185,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     # From the merge base, not the ref's tip: tests the base branch gained after
     # this branch forked would otherwise read as deleted here.
     base=$(git merge-base "${1:-HEAD}" HEAD 2>/dev/null) || base="${1:-HEAD}"
-    findings=$(git diff --no-color --no-ext-diff "$base" -- | tests_weakened_scan) || true
+    findings=$(git diff -M --no-color --no-ext-diff "$base" -- | tests_weakened_scan) || true
   fi
   if [ -n "$findings" ]; then
     printf '%s\n' "$findings"

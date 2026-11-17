@@ -1,13 +1,13 @@
 $ /bin/rm -rf src
-BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user.
+BLOCKED (sous): recursive force delete. Name the files, list them first, or ask the user. [rule rm-recursive]
   exit 2
 
 $ git -C . push -f origin main
-BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it.
+BLOCKED (sous): force, mirror or delete push. Ask the user; they run it themselves with ! if they want it. [rule push-force]
   exit 2
 
 $ sh -c 'cat .env'
-BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names.
+BLOCKED (sous): the command names .env or a variant, a secrets file. Read .env.example for the key names. [rule env-file]
   exit 2
 
 $ git status && ls src

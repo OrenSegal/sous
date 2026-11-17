@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Customize without forking: `.claude/hooks/sous.rules` adds project blocks (`block <name> <ERE>`) and lifts one guard rule for one whole-command shape (`allow <rule-id> <ERE>`). Only the user can write it, since the template's deny rule and the tamper check keep the agent out. `tamper`, `sous-accept`, `sous-record` and `too-long` never lift. Doctor lists the file's lines and fails on any the guard would skip.
+- Guard fails closed when a check errors: a bash error inside the matcher used to block with an empty message, and with rule ids it briefly allowed (caught by macOS CI). It now blocks as `internal-error`, which no project rule can lift, and the red-team corpus fails any row where the guard errors.
+- The tamper check finds interpreter write calls (`File.write(`, `os.replace(`, `shutil.copy(`) by name and then matches a small pattern. The single regex that held every verb segfaulted macOS 26's `/bin/bash` 3.2 inside regexec once earlier checks had run.
+- Every block message ends with a stable rule id (`[rule rm-recursive]`). The block log keeps it as a fifth column and `sous report` shows it. `tests/rules.test.sh` fails a rule with no id.
+- Guard: `sous probe --record` and `sous gate --ack-blocks` are blocked like `sous accept`, since an agent running them would vouch for itself. `sous upgrade` stays open: it only adds.
+- Guard: the loop breaker speaks on the second identical block in two minutes, not the third.
+- Guard hot path: an allowed command forks no `cat` and, on bash 4.2+, no `date`.
+- `install`/`upgrade`/`doctor --profile NAME[,NAME]` merge `templates/settings.NAME.json`. New `publish` profile denies package and image publishing.
+- Doctor fails a guard hook without `onFailure: "block"` (it fails open), and `upgrade` sets it. Doctor also names allowlisted hosts that accept uploads.
+- `sous status` prints the context loaded before the first prompt (memory lines, skill descriptions, MCP servers) and every `SOUS_*` knob with its default.
+- Plugin (ported from `bfa39f7`): with the plugin enabled, `install` adds no guard copy. `--vendor` adds one, and `--unvendor` drops a copy sous added. `sous check --hook` prints a SessionStart `systemMessage`. Commands and the reviewer call `"${CLAUDE_PLUGIN_ROOT}/bin/sous"`.
+- Plugin `Stop` hook: `sous check --stop` runs the receipts check on the live transcript and warns when the final message claims a test result the transcript doesn't back. It never blocks.
+- `tests-weakened` diffs with `-M`, so a moved test is not a deletion where `diff.renames` is off.
+- Evals: new cases `blocks-accept`, `gate-deleted-test` and `injected-readme`. `evals/RESULTS.md` records with/without scores per run.
+- CI: actions pinned by SHA, and ruff, pytest and Claude Code pinned. `release` runs the CI workflow first, with write permission only on the release job.
+
 - Evals: every case gets a `setup.sh` scaffold (before, `rm -rf vendor` ran in an empty workspace and `tests/test_cache.py` did not exist), the frontmatter the in-repo plugins use, and deterministic `tool_used` graders next to the LLM one. `test-audit-deletion` now hides the only expiry test behind a real-clock flake; new case `prune-tests-evidence`. CI shellchecks and builds the scaffolds and runs their fixture tests. Not yet run against a model.
 
 - Guard, harness off-switch: `sous uninstall` is blocked like `sous accept` (it removed the deny rules and the guard, so the agent could turn the harness off), and both now block behind a launcher: `python3 bin/sous accept`, `env`, `nohup`, `sudo -E`, `xargs`, `FOO=1`. These passed.
