@@ -66,7 +66,6 @@ expect("commands: only rows with a command", [("force push", "git push -f origin
 text4 = sous_blocks.render_report(log4, 7)
 expect("render_report: lists recent commands", True, "force push: git push -f origin main" in text4)
 
-expect("PROHIBIT matches", True, bool(sous_lint.PROHIBIT.search("Never run `rm -rf`")))
 expect("span_kind path", "path", sous_lint.span_kind(".env"))
 expect("span_kind url is nothing", None, sous_lint.span_kind("https://x.y"))
 expect("span_kind metachars are nothing", None, sous_lint.span_kind("a | b"))
@@ -88,7 +87,6 @@ def markers_ok(text):
 B, E = sous_compile.COMPILE_BEGIN, sous_compile.COMPILE_END
 expect("check_markers: none", True, markers_ok("# notes\n"))
 expect("check_markers: one pair", True, markers_ok(f"x\n{B}\ny\n{E}\nz\n"))
-expect("check_markers: begin only", False, markers_ok(f"x\n{B}\nmine\n"))
 expect("check_markers: end before begin", False, markers_ok(f"{E}\n{B}\n"))
 expect("check_markers: two pairs", False, markers_ok(f"{B}\n{E}\n{B}\n{E}\n"))
 

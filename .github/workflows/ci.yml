@@ -15,7 +15,14 @@ jobs:
       - uses: actions/checkout@v7
       - name: shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck -S warning hooks/*.sh bin/tests-ran bin/tests-weakened docs/demo.sh tests/*.sh
+        run: shellcheck -S warning hooks/*.sh bin/tests-ran bin/tests-weakened docs/demo.sh tests/*.sh evals/*/setup.sh
+      - name: eval scaffolds build and their fixture tests pass
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m pip install -q pytest
+          for s in evals/*/setup.sh; do
+            d=$(mktemp -d); (cd "$d" && sh "$GITHUB_WORKSPACE/$s" && if [ -d tests ]; then python3 -m pytest -q; fi)
+          done
       - name: ruff
         if: runner.os == 'Linux'
         run: pipx run ruff check bin/sous lib

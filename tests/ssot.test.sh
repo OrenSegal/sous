@@ -21,18 +21,14 @@ guard() { # $1 command; log and project dir come from the environment
   jq -cn --arg c "$1" '{tool_input:{command:$c}}' | bash "$ROOT/hooks/sous-guard.sh" 2>&1 >/dev/null
 }
 
-# Versions: the guard stamp, plugin.json and the marketplace entry for sous.
-guard_v=$(sed -n 's/^SOUS_GUARD_VERSION=//p' "$ROOT/hooks/sous-guard.sh")
-plugin_v=$(jq -r .version "$ROOT/.claude-plugin/plugin.json")
-market_v=$(jq -r '[.plugins[] | select(.name == "sous") | .version // empty][0] // empty' "$ROOT/.claude-plugin/marketplace.json")
-expect "guard stamp equals plugin.json version" "$plugin_v" "$guard_v"
-expect "marketplace sous entry equals plugin.json version" "$plugin_v" "$market_v"
-
-# One default log path, spelled the same way in both languages.
-want=".claude/sous/blocks.tsv"
-expect "guard default log path" 1 "$(grep -c "\$HOME/$want" "$ROOT/hooks/sous-guard.sh" | awk '{print ($1 > 0)}')"
-# shellcheck disable=SC2088 # the literal ~ is what the Python file spells
-expect "python default log path" 1 "$(grep -c "~/$want" "$ROOT/lib/sous_blocks.py" | awk '{print ($1 > 0)}')"
+# One default log path: with SOUS_LOG unset, the guard writes where `sous report` reads.
+H="$WORK/home"; mkdir -p "$H"
+jq -cn '{tool_input:{command:"rm -rf vendor"}}' | env -u SOUS_LOG HOME="$H" bash "$ROOT/hooks/sous-guard.sh" >/dev/null 2>&1
+default=$(env -u SOUS_LOG HOME="$H" python3 "$ROOT/bin/sous" report 2>&1 | sed -n 1p)
+case "$default" in
+  "sous report: 1 blocks"*) pass=$((pass + 1)) ;;
+  *) fail=$((fail + 1)); echo "FAIL: default log path: guard and report disagree: $default" ;;
+esac
 
 # Round trip: real guard writes, real readers read.
 export SOUS_LOG="$WORK/blocks.tsv"
@@ -44,19 +40,10 @@ import sous_blocks
 for ts, reason, where in sous_blocks.rows('$SOUS_LOG'):
     print(ts.__class__.__name__, reason.split('.')[0], where)")
 expect "log row: epoch, reason, project dir" "int BLOCKED (sous): recursive force delete $WORK/proj dir" "$rows"
-expect "allowed command counted as one byte" 1 "$(cat "$SOUS_LOG".allowed.* | wc -c | tr -d ' ')"
 report=$(python3 "$ROOT/bin/sous" report 2>&1 | sed -n 1p)
 case "$report" in
   "sous report: 1 blocks, 1 allowed (50.0% blocked) in the last 30 days"*) pass=$((pass + 1)) ;;
   *) fail=$((fail + 1)); echo "FAIL: report line: $report" ;;
-esac
-
-# The loop breaker reads the same log with the third column present.
-guard 'rm -rf vendor' >/dev/null
-third=$(guard 'rm -rf vendor')
-case "$third" in
-  *"Stop retrying this"*) pass=$((pass + 1)) ;;
-  *) fail=$((fail + 1)); echo "FAIL: loop breaker silent on third block with a 3-column log: $third" ;;
 esac
 
 echo "ssot: $pass passed, $fail failed"

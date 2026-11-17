@@ -44,7 +44,10 @@
       "git pull *"
     ],
     "filesystem": {
-      "denyRead": ["./.env", "./.env.local", "~/.ssh", "~/.aws"]
+      "denyRead": [
+        "./.env", "./.env.local", "~/.ssh", "~/.aws", "~/.gnupg", "~/.kube", "~/.netrc",
+        "~/.git-credentials", "~/.pypirc", "~/.config/gh", "~/.docker/config.json"
+      ]
     },
     "network": {
       "allowedDomains": [

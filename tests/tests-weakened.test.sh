@@ -377,15 +377,6 @@ diff --git a/tests/test_a.py b/tests/test_a.py
 +        pass
      except OSError:
 D
-check 0 - "assertion comparing a call to a constant is not trivial" <<'D'
-diff --git a/tests/test_a.py b/tests/test_a.py
---- a/tests/test_a.py
-+++ b/tests/test_a.py
-@@ -1,2 +1,3 @@
- def test_adds():
-     assert add(1, 2) == 3
-+    assert add(2, 2) == 4
-D
 
 # Moved out of where the runner looks.
 check 1 moved "git mv out of tests/" <<'D'

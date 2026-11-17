@@ -20,8 +20,8 @@ The capture above is the real output of `bash docs/demo.sh`, rendered by
 
 | Threat | Control | Proof (run it) |
 |---|---|---|
-| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 17 rules, each with a block and an allow fixture (`bash tests/rules.test.sh` prints `17 rules, 55 passed`: two rows per rule plus one check per guard message); red-team corpus (`bash tests/adversarial.test.sh` prints `481 passed`: 287 spellings it must block, 172 it must let through, 22 timing, log and loop-breaker checks) |
-| Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 17 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same corpus |
+| Destructive command (`rm -rf`, force push, `git reset --hard`, `git clean`, `rsync --delete`) | `sous-guard.sh` PreToolUse hook, plus the deny rules `sous install` writes | 9 of the guard's 18 rules, each with a block and an allow fixture (`bash tests/rules.test.sh` prints `18 rules, 57 passed`: two rows per rule plus one check per guard message); red-team corpus (`bash tests/adversarial.test.sh` prints `532 passed`: 314 spellings it must block, 182 it must let through, 36 timing, log and loop-breaker checks) |
+| Secret read (`.env`, `~/.ssh`, globs like `cat .e*`, `gh auth token`) | the same hook, `.env` deny rules, and the OS sandbox's `denyRead` | 4 of the 18 rules, a block and an allow fixture each (`tests/rules.test.sh`); the secrets sections of the same corpus |
 | Fake-green tests (the run passed but executed nothing) | `tests-ran`, and `sous gate --test-log` | 53 test-log cases (`bash tests/tests-ran.test.sh`) |
 | Weakened tests (deleted, skipped, loosened assertion, early `return`) | `tests-weakened`, and `sous gate` | 56 cases (`bash tests/tests-weakened.test.sh`) |
 | Plugin drift (a plugin changes a hook script without bumping its version) | `sous accept` records each plugin's surface; `sous doctor` and `sous gate` name what changed | 16 drift checks in `tests/install.test.sh` |
@@ -148,7 +148,9 @@ already reads:
 | 5 Human gates | `permissions.ask`, user settings | push / commit / PR / unsandboxed retry ask first; bypass mode disabled |
 
 It also ships the [`test-audit`](skills/test-audit/SKILL.md) skill, which gates
-new tests on the behavior they prove and makes deletions show evidence, and
+new tests on the behavior they prove and makes deletions show evidence, the
+[`prune-tests`](skills/prune-tests/SKILL.md) skill, which deletes or rewrites
+tests that guard no behavior, and
 [`tests-ran`](bin/tests-ran), which exits 1 when a test log shows zero executed
 tests, and [`tests-weakened`](bin/tests-weakened), which reads a diff and flags
 the edit that made the tests pass: deleted, skipped, loosened (`== 42` to
@@ -273,7 +275,7 @@ instead of retrying outside it (`sandbox.allowUnsandboxedCommands: false`).
 
 The plugin carries the guard hook, a `SessionStart` check that is silent when
 layers 3 and 5 are present, `/sous:install`, `/sous:doctor`, `/sous:report`,
-the `sous-reviewer` agent, `test-audit` and `tests-ran` (its `bin/` goes on
+the `sous-reviewer` agent, `test-audit`, `prune-tests` and `tests-ran` (its `bin/` goes on
 PATH). A plugin can't set permissions or the sandbox, so run `/sous:install`
 once per project. If the project also has the copied guard, the guard runs
 twice; `sous doctor` fails on that and says how to keep one.
@@ -378,6 +380,8 @@ alongside it:
 
 - [spec-kit](https://github.com/github/spec-kit) for spec-driven planning.
   sous checks the result: the tests ran and weren't weakened.
+- [codebase-audit](https://github.com/OrenSegal/codebase-audit) for a full
+  adversarial audit and refactor. sous gates the branch it produces.
 - [superpowers](https://github.com/obra/superpowers) for workflow skills. sous
   adds hard stops and a merge gate that hold whether or not a skill loads.
 - AgentShield or agent-scan for one-off config and MCP scans. sous keeps what
@@ -407,6 +411,8 @@ own test suite, and CI runs every one. `sous marketplace-check` verifies that
 every in-repo plugin source has a `plugin.json` with the listed version, and
 that any git-pinned plugin ref resolves to its sha (exit 75: a remote was
 unreachable). [`evals/`](evals) holds
-`claude plugin eval` cases; they run real sessions, so CI skips them.
+`claude plugin eval` cases, each with a scaffold and a no-plugin baseline arm;
+they run real sessions, so CI only builds the scaffolds and runs their fixture
+tests.
 
 [MIT licensed](LICENSE).
