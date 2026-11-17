@@ -482,6 +482,7 @@ _sous_match() {
   local re_interp_cmd='(^|[;&|(`[:space:]/])(python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
   local re_api='(^|[^[:alnum:]_])(rmtree|remove_tree|rm_rf|rm_r|remove_dir|remove_entry_secure|RemoveAll)([[:space:]]*\(|[[:space:]]+[^[:space:]=])|\.(rmSync|rmdirSync|rm|rmdir)\([^)]*recursive'
   local has_interp=0 comp cand gsub skip
+  local re_wrapglob='[(,=[]["'"'"']?[.]([^*+?[:space:]()=,/"'"'"'][^[:space:]()=,/"'"'"']*)$'
   [[ $norm =~ $re_interp_cmd ]] && has_interp=1
   # Separators as quoted variables: bash 3.2 can't parse `<(` or `$(` inline here.
   local nl=$'\n' sep
@@ -609,6 +610,12 @@ _sous_match() {
       comp="${tok##*/}"
       comp="${comp#[<>]}"
       comp="${comp%%)*}"  # the ) that closes $(...) is not part of the name
+      # An interpreter call wraps the glob: glob.glob(.e*) is one token. Take the
+      # dot-glob after ( , = [ and quote marks. `.*`, `.+` and `.?` stay regex
+      # text here, as in a heredoc body; `.e*` and `.[e]nv` are globs.
+      if (( has_interp )) && [[ $comp != .* ]] && [[ $comp =~ $re_wrapglob ]]; then
+        comp=".${BASH_REMATCH[1]}"
+      fi
       case $comp in .*|'[.]'*) ;; *) continue ;; esac
       _sous_lower "$comp"
       for cand in .env .env.local .envrc .env.production .env.development; do
@@ -645,10 +652,12 @@ _sous_match() {
   fi
 
   # 6c. `sous accept` records the current plugin surface as the reviewed one, so
-  #     a session that can run it can clear its own drift report. The user runs it.
-  local re_accept='(^|[;&|(])[[:space:]]*([^[:space:]]*/)?sous[[:space:]]+accept([[:space:]]|$)'
+  #     a session that can run it can clear its own drift report; `sous uninstall`
+  #     switches the harness off. The user runs both, under any launcher prefix.
+  local pre='(([^[:space:]]*/)?(sudo|env|command|exec|nohup|time|doas|xargs|python[0-9.]*|bash|sh|zsh)([[:space:]]+-[^[:space:]]*)*[[:space:]]+|[[:alpha:]_][[:alnum:]_]*=[^[:space:]]*[[:space:]]+)*'
+  local re_accept="(^|[;&|(])[[:space:]]*${pre}([^[:space:]]*/)?sous[[:space:]]+(accept|uninstall)([[:space:]]|\$)"
   if [[ $norm =~ $re_accept ]]; then
-    echo "BLOCKED (sous): sous accept marks plugin changes as reviewed. Show the user the drift; they run it."
+    echo "BLOCKED (sous): sous accept marks plugin changes reviewed and sous uninstall turns the harness off. Show the user; they run it."
     return 1
   fi
 
@@ -659,7 +668,9 @@ _sous_match() {
   local shells='([^[:space:]]*/)?(ba|z|da|k|fi|c|tc)?sh'
   local interp='([^[:space:]]*/)?(python[0-9.]*|perl|ruby|node|deno|bun|php)'
   local fetch='(curl|wget|base64|xxd|openssl|fetch|nc|ncat|gunzip|zcat|aria2c|http|xh)'
-  local re_shell_pipe="(^|[^|])\\|&?[[:space:]]*${wrap}${shells}([[:space:]]|\$)"
+  # A shell reads stdin as code only with no script operand, a flag (-s, -c "$(cat)", -),
+  # or /dev/stdin; `printf x | bash run.sh` runs the file and feeds it data.
+  local re_shell_pipe="(^|[^|])\\|&?[[:space:]]*${wrap}${shells}([[:blank:]]*(\$|[;&|)${lf}])|[[:blank:]]+(-|/dev/stdin|/dev/fd/0|/proc/self/fd/0))"
   local re_interp_pipe="(^|[^[:alnum:]_])${fetch}[[:space:]][^;&${lf}]*[^|]\\|&?[[:space:]]*${wrap}${interp}(([[:space:]]+(-|-[[:alpha:]]{1,3}|--))*)[[:space:]]*(\$|[;&|)${lf}])"
   local re_shell_subst="(^|[^[:alnum:]_])((ba|z|da|k|fi)?sh|eval|source)[[:space:]]+([^;&|${lf}]*[[:space:]])?(\\\$\\(|${bt})[[:space:]]*${wrap}${fetch}([[:space:]]|\$)"
   local re_procsub="(^|[^[:alnum:]_.])((ba|z|da|k|fi)?sh|source|\\.|${interp})([[:space:]]+-[^[:space:]]*)*[[:space:]]+(<[[:space:]]*)?<\\("

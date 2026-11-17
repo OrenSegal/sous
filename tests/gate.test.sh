@@ -114,7 +114,7 @@ printf 'collected 0 items\n===== no tests ran in 0.01s =====\n' >"$(logpath "$R"
 expect "a log of zero tests fails" 1 gate
 seen "names tests-ran" "FAIL +tests-ran"
 fixture stale
-touch -t 203001010000 "$R/app.py"   # edited after the run (mtime only: content, so status, unchanged)
+touch -t 200001010000 "$(logpath "$R")"   # the run predates the last edit (mtime only: content, so status, unchanged)
 expect "a log older than a changed file fails" 1 gate
 seen "says it is older" "FAIL +tests-ran.*older"
 fixture explicitlog

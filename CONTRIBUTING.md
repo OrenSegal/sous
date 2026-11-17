@@ -30,7 +30,7 @@ bash tests/fleet.test.sh
 shellcheck -S warning hooks/*.sh bin/tests-ran bin/tests-weakened docs/demo.sh tests/*.sh
 ruff check bin/sous lib           # settings in ruff.toml
 claude plugin validate . --strict
-claude plugin eval . --allow-tools Bash --runs 3   # optional: real sessions, costs money; CI skips it
+claude plugin eval . --scaffold --allow-tools Bash --runs 3   # optional: real sessions with a no-plugin baseline, costs money; CI only builds the scaffolds
 ```
 
 The plugins under `plugins/` keep their own suites and their own CONTRIBUTING.md; run them from the plugin's folder (CI's `plugins` job does the same):
