@@ -1,19 +1,20 @@
 #!/bin/bash
-# Temporary: which part of the tamper re_first pattern crashes this host's regcomp/regexec?
+# Temporary: why does the guard die silently on the ruby File.write row on macOS 26?
+ulimit -s; locale | head -3
 t='ruby -e File.write(.claude/settings.json, {})'
+re=$(sed -n 's/^    local re_first="\(.*\)"$/\1/p' hooks/sous-guard.sh)
 p='(\.claude/(settings(\.local)?\.json|hooks(/[^[:space:];&|<>(),]*)?)|\.mcp\.json)'
 end='([^[:alnum:]_.-]|$)'
 arg="([^[:space:],;]*[/(])?${p}"
 w='(^|[^[:alnum:]_])'
-names='(write|write_text|write_bytes|writeFile|writeFileSync|appendFile|appendFileSync|writeTextFile|writeTextFileSync|createWriteStream|outputFile|outputFileSync|writeJson|writeJsonSync|file_put_contents|truncate|truncateSync|remove|removeSync|unlink|unlinkSync|rm|rmSync|rm_f|delete|chmod|chmodSync|rename|renameSync|move|mv)'
-probe() { ( [[ $t =~ $2 ]]; echo "rc=$?" ) 2>&1 | tail -1 | sed "s/^/$1: /"; echo "$1 subshell exit=${PIPESTATUS[0]}"; }
-probe full "${w}${names}\\([[:space:]]*${arg}${end}"
-probe names-paren "${w}${names}\\("
-probe write-only "${w}(write)\\([[:space:]]*${arg}${end}"
-probe paren-arg-end "\\([[:space:]]*${arg}${end}"
-probe arg-end "${arg}${end}"
-probe arg "${arg}"
-probe p "${p}"
-probe p-no-hooks '(\.claude/(settings(\.local)?\.json)|\.mcp\.json)'
-probe bracket-paren '[/(]'
-probe hooks-class '(/[^[:space:];&|<>(),]*)?'
+eval "re=\"$re\""
+echo "re length ${#re}"
+try() { bash -c "$1" _ "$t" "$re"; echo "$2 exit=$?"; }
+try '[[ $1 =~ $2 ]]; echo rc=$?' default-locale
+try 'LC_ALL=C; [[ $1 =~ $2 ]]; echo rc=$?' LC_ALL=C-global
+try 'f() { local LC_ALL=C; [[ $1 =~ $2 ]]; echo rc=$?; }; f "$1" "$2"' LC_ALL=C-local
+try 'f() { local LC_ALL=C; [[ $1 =~ $2 ]]; echo rc=$?; }; x=$(f "$1" "$2"); echo "sub=$? out=$x"' LC_ALL=C-local-cmdsub
+payload='{"tool_input":{"command":"ruby -e \"File.write('"'"'.claude/settings.json'"'"', '"'"'{}'"'"')\""}}'
+printf '%s' "$payload" | bash hooks/sous-guard.sh; echo "hook exit=$?"
+src='source hooks/sous-guard.sh; _sous_tamper "$1" 1; echo tamper_rc=$?'
+bash -c "$src" _ "$t"; echo "direct exit=$?"
