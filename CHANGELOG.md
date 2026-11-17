@@ -4,6 +4,7 @@
 
 - Customize without forking: `.claude/hooks/sous.rules` adds project blocks (`block <name> <ERE>`) and lifts one guard rule for one whole-command shape (`allow <rule-id> <ERE>`). Only the user can write it, since the template's deny rule and the tamper check keep the agent out. `tamper`, `sous-accept`, `sous-record` and `too-long` never lift. Doctor lists the file's lines and fails on any the guard would skip.
 - Guard fails closed when a check errors: a bash error inside the matcher used to block with an empty message, and with rule ids it briefly allowed (caught by macOS CI). It now blocks as `internal-error`, which no project rule can lift, and the red-team corpus fails any row where the guard errors.
+- The tamper check finds interpreter write calls (`File.write(`, `os.replace(`, `shutil.copy(`) by name and then matches a small pattern. The single regex that held every verb segfaulted macOS 26's `/bin/bash` 3.2 inside regexec once earlier checks had run.
 - Every block message ends with a stable rule id (`[rule rm-recursive]`). The block log keeps it as a fifth column and `sous report` shows it. `tests/rules.test.sh` fails a rule with no id.
 - Guard: `sous probe --record` and `sous gate --ack-blocks` are blocked like `sous accept`, since an agent running them would vouch for itself. `sous upgrade` stays open: it only adds.
 - Guard: the loop breaker speaks on the second identical block in two minutes, not the third.

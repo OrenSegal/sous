@@ -29,9 +29,6 @@ jobs:
         run: pipx run ruff==0.17.4 check bin/sous lib
       - name: which bash runs the suites
         run: command -v bash && bash --version | head -1
-      - name: regex probe (temporary)
-        if: runner.os == 'macOS'
-        run: sw_vers; bash .github/probe-regex.sh
       - name: guard table
         run: bash tests/sous-guard.test.sh
       - name: red-team corpus

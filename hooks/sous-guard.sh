@@ -819,12 +819,29 @@ _sous_tamper() {
   if [[ $2 == 1 ]]; then
     local arg="([^[:space:],;]*[/(])?${p}"
     local w='(^|[^[:alnum:]_])'
-    local re_first="${w}(write|write_text|write_bytes|writeFile|writeFileSync|appendFile|appendFileSync|writeTextFile|writeTextFileSync|createWriteStream|outputFile|outputFileSync|writeJson|writeJsonSync|file_put_contents|truncate|truncateSync|remove|removeSync|unlink|unlinkSync|rm|rmSync|rm_f|delete|chmod|chmodSync|rename|renameSync|move|mv)\\([[:space:]]*${arg}${end}"
-    local re_later="${w}(copy|copy2|copyfile|copyFile|copyFileSync|cp|cpSync|copy_file|install|symlink|symlinkSync|link|linkSync|ln_s|ln_sf|rename|renameSync|os\\.replace|move|mv)\\([^)]*,[[:space:]]*${arg}${end}"
+    # Calls are found by name, then matched against a small pattern: one regex
+    # with all the verbs in it segfaults macOS 26's /bin/bash 3.2 regexec.
+    local re_call="${w}([[:alnum:]_.]+)\\(" re_first="^[[:space:]]*${arg}${end}" re_later="^[^)]*,[[:space:]]*${arg}${end}"
+    local rest="$t" name
+    while [[ $rest =~ $re_call ]]; do
+      name="${BASH_REMATCH[2]}"
+      _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest=$_sous_r
+      case ${name##*.} in
+        write|write_text|write_bytes|writeFile|writeFileSync|appendFile|appendFileSync|writeTextFile|writeTextFileSync|createWriteStream|outputFile|outputFileSync|writeJson|writeJsonSync|file_put_contents|truncate|truncateSync|remove|removeSync|unlink|unlinkSync|rm|rmSync|rm_f|delete|chmod|chmodSync|rename|renameSync|move|mv)
+          [[ $rest =~ $re_first ]] && return 1 ;;
+      esac
+      case $name in
+        os.replace|*.os.replace) [[ $rest =~ $re_later ]] && return 1 ;;
+      esac
+      case ${name##*.} in
+        copy|copy2|copyfile|copyFile|copyFileSync|cp|cpSync|copy_file|install|symlink|symlinkSync|link|linkSync|ln_s|ln_sf|rename|renameSync|move|mv)
+          [[ $rest =~ $re_later ]] && return 1 ;;
+      esac
+    done
     local re_open="${w}(open|fopen|openSync|File\\.open)\\([[:space:]]*${arg}[)]*[[:space:]]*,[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?[rbt]*[wax+]"
     local re_path="Path\\([[:space:]]*${arg}[[:space:]]*\\)\\.(write_text|write_bytes|unlink|rename|replace|touch|chmod|open\\([[:space:]]*(mode[[:space:]]*=[[:space:]]*)?[rbt]*[wax+])"
     local re_perl="${w}open\\([^,)]*,[[:space:]]*(\\+?>>?|\\+<)[[:space:]]*,[[:space:]]*${arg}${end}|${w}unlink[[:space:]]+${arg}${end}"
-    if [[ $t =~ $re_first || $t =~ $re_later || $t =~ $re_open || $t =~ $re_path || $t =~ $re_perl ]]; then
+    if [[ $t =~ $re_open || $t =~ $re_path || $t =~ $re_perl ]]; then
       return 1
     fi
   fi
