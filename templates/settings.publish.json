@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(npm publish*)",
+      "Bash(pnpm publish*)",
+      "Bash(yarn npm publish*)",
+      "Bash(twine upload*)",
+      "Bash(uv publish*)",
+      "Bash(poetry publish*)",
+      "Bash(cargo publish*)",
+      "Bash(gem push*)",
+      "Bash(docker push*)",
+      "Bash(gh release create*)"
+    ]
+  }
+}

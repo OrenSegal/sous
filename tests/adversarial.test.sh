@@ -397,6 +397,38 @@ check 2 'nohup sous accept .'
 check 2 'sudo -E sous accept'
 check 2 'echo . | xargs sous accept'
 check 2 'FOO=1 sous accept'
+# --- probe --record and gate --ack-blocks record that the user checked: the user's word.
+check 2 'sous probe --record .'
+check 2 'python3 bin/sous gate . --ack-blocks'
+check 2 'sous gate --base main --ack-blocks'
+check 0 'sous probe'
+check 0 'sous gate . --base main'
+check 0 'grep -n -- --ack-blocks bin/sous'
+
+# --- Project rules (.claude/hooks/sous.rules): the user adds blocks and lifts one
+# rule for one exact command shape; the harness's own rules never lift.
+proj="$SANDBOX_DIR/proj"; mkdir -p "$proj/.claude/hooks"
+cat >"$proj/.claude/hooks/sous.rules" <<'RULES'
+# comments and blank lines are skipped
+
+block deploy-prod   (^|[;&|[:space:]])make[[:space:]]+deploy-prod
+allow rm-recursive  rm -rf (vendor|tmp/cache)
+allow tamper        .*
+allow git-clean     [unclosed
+RULES
+CLAUDE_PROJECT_DIR="$proj" check 2 'make deploy-prod'
+CLAUDE_PROJECT_DIR="$proj" check 0 'make deploy-staging'
+CLAUDE_PROJECT_DIR="$proj" check 0 'rm -rf vendor'
+CLAUDE_PROJECT_DIR="$proj" check 2 'rm -rf vendor ~'
+CLAUDE_PROJECT_DIR="$proj" check 2 'rm -rf src'
+CLAUDE_PROJECT_DIR="$proj" check 2 'echo x > .claude/settings.json'
+CLAUDE_PROJECT_DIR="$proj" check 2 'git clean -fd'
+check 2 'rm -rf vendor'
+msg=$(jq -cn --arg c 'make deploy-prod' '{tool_input:{command:$c}}' | (cd "$SANDBOX_DIR" && CLAUDE_PROJECT_DIR="$proj" "$BASH" "$HOOK" 2>&1 >/dev/null))
+case "$msg" in *"project rule deploy-prod"*"[rule project:deploy-prod]"*) pass=$((pass + 1)) ;;
+  *) fail=$((fail + 1)); printf 'FAIL project block message: %s\n' "$msg" >&2 ;; esac
+rm "$proj/.claude/hooks/sous.rules"; rmdir "$proj/.claude/hooks" "$proj/.claude" "$proj"
+
 # --- sous uninstall switches the harness off: also the user's word.
 check 2 'sous uninstall .'
 check 2 'python3 ~/.sous/bin/sous uninstall'
@@ -676,10 +708,10 @@ cat .env --password=SEKRIT
 printf 'x\tTABKEY=SEKRIT\n' ; cat .env\nKEY=SEKRITnewline
 echo "-----BEGIN OPENSSH PRIVATE KEY-----\nSEKRITbody\n-----END OPENSSH PRIVATE KEY-----" ; cat .env
 SECRETS
-rows=$(awk -F'\t' 'NF == 4' "$SOUS_LOG" | wc -l | tr -d ' ')
+rows=$(awk -F'\t' 'NF == 5' "$SOUS_LOG" | wc -l | tr -d ' ')
 if [ "$rows" -eq "$nsec" ] && [ "$(wc -l <"$SOUS_LOG" | tr -d ' ')" -eq "$nsec" ] && ! grep -q 'SEKRIT\|ZZZZZZZZ' "$SOUS_LOG"; then
   pass=$((pass + 1)); else
-  fail=$((fail + 1)); printf 'FAIL block log redaction: want %s 4-column rows and no secret, got:\n' "$nsec" >&2; cat "$SOUS_LOG" >&2
+  fail=$((fail + 1)); printf 'FAIL block log redaction: want %s 5-column rows and no secret, got:\n' "$nsec" >&2; cat "$SOUS_LOG" >&2
 fi
 # Long commands are cut, after redaction.
 : >"$SOUS_LOG"
@@ -707,14 +739,14 @@ if ! cut -f1-3 "$SOUS_LOG" | grep -q 'canary\|zq81'; then pass=$((pass + 1)); el
 fi
 
 
-# --- Loop breaker: the same block three times in two minutes tells the agent to stop
+# --- Loop breaker: the same block twice in two minutes tells the agent to stop
 # retrying. Built from the reason-only log, so no command text is kept.
 : >"$SOUS_LOG"
 # shellcheck disable=SC2069  # stderr is the message; stdout is dropped on purpose
 guard_msg() { printf '{"tool_input":{"command":"%s"}}' "$1" | bash "$HOOK" 2>&1 >/dev/null; }
-m1=$(guard_msg 'cat .env'); guard_msg 'cat .env' >/dev/null; m3=$(guard_msg 'cat .env')
+m1=$(guard_msg 'cat .env'); m3=$(guard_msg 'cat .env')
 case "$m1" in *"Stop retrying"*) fail=$((fail + 1)); echo "FAIL loop breaker: spoke on the 1st block" >&2 ;; *) pass=$((pass + 1)) ;; esac
-case "$m3" in *"Stop retrying"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: silent on the 3rd identical block: $m3" >&2 ;; esac
+case "$m3" in *"Stop retrying"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: silent on the 2nd identical block: $m3" >&2 ;; esac
 case "$m3" in "BLOCKED (sous): "*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: message lost its prefix" >&2 ;; esac
 m4=$(guard_msg 'rm -rf vendor')
 case "$m4" in *"Stop retrying"*) fail=$((fail + 1)); echo "FAIL loop breaker: a different reason was escalated" >&2 ;; *) pass=$((pass + 1)) ;; esac
@@ -722,12 +754,10 @@ case "$m4" in *"Stop retrying"*) fail=$((fail + 1)); echo "FAIL loop breaker: a 
 # each are not one agent looping, so only blocks from the same project dir count.
 : >"$SOUS_LOG"
 CLAUDE_PROJECT_DIR=/wt/one guard_msg 'cat .env' >/dev/null
-CLAUDE_PROJECT_DIR=/wt/two guard_msg 'cat .env' >/dev/null
-m5=$(CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env')
+m5=$(CLAUDE_PROJECT_DIR=/wt/two guard_msg 'cat .env')
 case "$m5" in *"Stop retrying"*) fail=$((fail + 1)); echo "FAIL loop breaker: escalated on blocks from other projects" >&2 ;; *) pass=$((pass + 1)) ;; esac
-CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env' >/dev/null
-m6=$(CLAUDE_PROJECT_DIR=/wt/three guard_msg 'cat .env')
-case "$m6" in *"Stop retrying"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: silent on the 3rd block in one project: $m6" >&2 ;; esac
+m6=$(CLAUDE_PROJECT_DIR=/wt/two guard_msg 'cat .env')
+case "$m6" in *"Stop retrying"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); echo "FAIL loop breaker: silent on the 2nd block in one project: $m6" >&2 ;; esac
 # The count is of matching blocks in the recent window, not consecutive ones:
 # another block in between must not make the message claim "in a row".
 : >"$SOUS_LOG"

@@ -200,7 +200,7 @@ Three claims, each one checked by something you can run:
 
 Around those claims:
 
-- **Loop breaker.** The third identical block from the same project within two
+- **Loop breaker.** The second identical block from the same project within two
   minutes adds "Stop retrying this; ask the user" to what the agent sees. It counts
   by the log's reason column.
 - **Block rate.** The guard counts allowed commands as one byte per day in

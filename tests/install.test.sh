@@ -12,6 +12,7 @@ export CI=1   # skip user-scope checks: this host's ~/.claude is not under test
 export SOUS_LOG="$WORK/blocks.tsv"   # never read or write the real block log
 export XDG_CACHE_HOME="$WORK/cache"  # table cache starts cold per run
 export SOUS_TABLE_CACHE=on           # ...and is trusted under CI=1: it is this run's own, fresh
+export SOUS_GUARD_MS=5000   # latency is load-dependent; one row below checks the budget itself
 pass=0
 fail=0
 
@@ -29,6 +30,27 @@ p1="$WORK/fresh"; mkdir -p "$p1"
 expect "doctor before install" 1 python3 "$SOUS" doctor "$p1"
 expect "install" 0 python3 "$SOUS" install "$p1"
 expect "doctor after install" 0 python3 "$SOUS" doctor "$p1"
+expect "doctor fails a guard over its latency budget" 0 sh -c 'SOUS_GUARD_MS=0 python3 "$1" doctor "$2" | grep -q "over 0ms (SOUS_GUARD_MS)"' _ "$SOUS" "$p1"
+pf="$WORK/failopen"; mkdir -p "$pf"; python3 "$SOUS" install "$pf" >/dev/null
+jq 'del(.hooks.PreToolUse[0].hooks[0].onFailure)' "$pf/.claude/settings.json" >"$WORK/fo.json" && cp "$WORK/fo.json" "$pf/.claude/settings.json"
+expect "doctor fails a guard hook that fails open" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "lacks onFailure"' _ "$SOUS" "$pf"
+expect "upgrade makes the guard hook fail closed" 0 sh -c 'python3 "$1" upgrade "$2" >/dev/null && jq -e ".hooks.PreToolUse[0].hooks[0].onFailure == \"block\"" "$2/.claude/settings.json"' _ "$SOUS" "$pf"
+expect "doctor passes after that upgrade" 0 python3 "$SOUS" doctor "$pf"
+# Project rules: doctor names what each line does and fails on lines the guard skips.
+printf 'block deploy-prod make deploy-prod\nallow rm-recursive rm -rf vendor\n' >"$pf/.claude/hooks/sous.rules"
+expect "doctor lists a project allow line" 0 sh -c 'python3 "$1" doctor "$2" | grep -q "lifts guard rule rm-recursive"' _ "$SOUS" "$pf"
+expect "doctor passes with valid project rules" 0 python3 "$SOUS" doctor "$pf"
+printf 'allow tamper .*\nallow git-clean [unclosed\nnonsense\n' >>"$pf/.claude/hooks/sous.rules"
+expect "doctor fails project rules the guard skips or ignores" 0 sh -c 'out=$(python3 "$1" doctor "$2"); echo "$out" | grep -q "guards the harness itself" && echo "$out" | grep -q "can.t compile" && echo "$out" | grep -q "line 5 is not"' _ "$SOUS" "$pf"
+rm "$pf/.claude/hooks/sous.rules"
+# Profiles: a templates/settings.NAME.json file, merged additively and checked by doctor.
+expect "doctor --profile fails before the profile is installed" 1 python3 "$SOUS" doctor "$pf" --profile publish
+expect "install --profile publish" 0 python3 "$SOUS" install "$pf" --profile publish
+expect "profile deny rule landed" 0 jq -e '.permissions.deny | index("Bash(npm publish*)")' "$pf/.claude/settings.json"
+expect "doctor --profile passes after install" 0 python3 "$SOUS" doctor "$pf" --profile publish
+expect "unknown profile is a usage error" 64 python3 "$SOUS" install "$pf" --profile nope
+expect "--profile ios equals --ios" 0 sh -c 'python3 "$1" install "$2" --profile ios --dry-run | grep -q "(ios)"' _ "$SOUS" "$pf"
+expect "uninstall removes the profile's rules too" 0 sh -c 'python3 "$1" uninstall "$2" >/dev/null && ! jq -e ".permissions.deny // [] | index(\"Bash(npm publish*)\")" "$2/.claude/settings.json" >/dev/null 2>&1' _ "$SOUS" "$pf"
 expect "hook copied + executable" 0 test -x "$p1/.claude/hooks/sous-guard.sh"
 expect "skill copied" 0 test -f "$p1/.claude/skills/test-audit/SKILL.md"
 expect "sandbox denies credential stores the guard leaves to it" 0 jq -e '.sandbox.filesystem.denyRead | index("~/.git-credentials") and index("~/.config/gh")' "$p1/.claude/settings.json"

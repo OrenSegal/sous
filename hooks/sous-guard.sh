@@ -59,22 +59,42 @@ SOUS_GUARD_MAX_SEGMENTS=2048
 # ($CLAUDE_PROJECT_DIR, else the hook's cwd) lets `sous gate` and `sous fleet`
 # tell worktrees apart.
 # Two things ride on that log without adding any text to it:
-#   - the third identical reason from the same project dir within two minutes
+#   - the second identical reason from the same project dir within two minutes
 #     adds a "stop retrying" line to what the agent sees (the log keeps the
 #     plain reason), so an agent looping on a block is told to ask the user
 #     instead; other sessions sharing the log don't count toward it;
 #   - an allowed command appends one byte to $SOUS_LOG.allowed.YYYYMMDD, so
 #     `sous report` can say how often the guard fires (a block rate).
 sous_guard() {
-  local reason shown log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}" where="${CLAUDE_PROJECT_DIR:-$PWD}"
+  local reason shown rule log="${SOUS_LOG:-$HOME/.claude/sous/blocks.tsv}" where="${CLAUDE_PROJECT_DIR:-$PWD}"
+  local rules="${CLAUDE_PROJECT_DIR:-$PWD}/.claude/hooks/sous.rules"
   if reason=$(_sous_match "$1"); then
+    reason=
+    if [[ -f $rules ]] && _sous_project_rule "$rules" block "" "$1"; then
+      reason=$_sous_pr; rule=$_sous_prid
+    fi
+  else
+    _sous_rule_id "$reason"; rule=$_sous_id
+    # The harness guarding itself is never lifted: tamper, accept/uninstall, the
+    # say-so records, and commands too long to read.
+    case $rule in
+      tamper | sous-accept | sous-record | too-long) ;;
+      *) [[ -f $rules ]] && _sous_project_rule "$rules" allow "$rule" "$1" && reason= ;;
+    esac
+  fi
+  if [[ -z $reason ]]; then
     [[ $log != off ]] && {
       [[ $log == */* && ! -d ${log%/*} ]] && mkdir -p "${log%/*}"
-      printf . >>"$log.allowed.$(date +%Y%m%d)"
+      local day
+      # printf %()T is a builtin from bash 4.2; 3.2 (macOS /bin/bash) forks date.
+      if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2))); then
+        printf -v day '%(%Y%m%d)T' -1
+      else day=$(date +%Y%m%d); fi
+      printf . >>"$log.allowed.$day"
     } 2>/dev/null
     return 0
   fi
-  shown="$reason"
+  shown="$reason [rule $rule]"
   if [[ $log != off ]]; then
     local now repeats=0 ts r w
     now=$(date +%s)
@@ -84,10 +104,64 @@ sous_guard() {
         [[ $ts =~ ^[0-9]+$ && $r == "$reason" && $w == "$where" && $((now - ts)) -le 120 ]] && repeats=$((repeats + 1))
       done < <(tail -n 8 "$log" 2>/dev/null)
     fi
-    [[ $repeats -ge 2 ]] && shown="$reason Blocked at least $((repeats + 1)) times for the same reason in the last two minutes. Stop retrying this; ask the user how they want to proceed."
-    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\t%s\n' "$now" "$reason" "$where" "$(_sous_redact "$1")" >>"$log"; } 2>/dev/null
+    [[ $repeats -ge 1 ]] && shown="$shown Blocked at least $((repeats + 1)) times for the same reason in the last two minutes. Stop retrying this; ask the user how they want to proceed."
+    { mkdir -p "$(dirname "$log")" && printf '%s\t%s\t%s\t%s\t%s\n' "$now" "$reason" "$where" "$(_sous_redact "$1")" "$rule" >>"$log"; } 2>/dev/null
   fi
   printf '%s\n' "$shown"
+  return 1
+}
+
+# Sets _sous_id to the stable id of the rule behind block message $1. The id is
+# what .claude/hooks/sous.rules names to lift one rule, and what the log keeps.
+# tests/rules.test.sh fails when a rule maps to "other".
+_sous_rule_id() {
+  case $1 in
+    *"rimraf is a recursive"*) _sous_id='rimraf' ;;
+    *"recursive delete through an interpreter"*) _sous_id='interp-delete' ;;
+    *"recursive force delete"*) _sous_id='rm-recursive' ;;
+    *"git clean deletes"*) _sous_id='git-clean' ;;
+    *"find -delete"*) _sous_id='find-delete' ;;
+    *"rsync --delete"*) _sous_id='rsync-delete' ;;
+    *"force, mirror or delete push"*) _sous_id='push-force' ;;
+    *"reading ~/"*) _sous_id='home-secrets' ;;
+    *"reaches"*) _sous_id='dot-glob' ;;
+    *"a secrets file. Read .env.example"*) _sous_id='env-file' ;;
+    *"writing a harness file"*) _sous_id='tamper' ;;
+    *"sous accept marks plugin changes"*) _sous_id='sous-accept' ;;
+    *"record the user's say-so"*) _sous_id='sous-record' ;;
+    *"piping generated or downloaded text"*) _sous_id='shell-pipe' ;;
+    *"git checkout, restore or switch that discards"*) _sous_id='git-discard' ;;
+    *"git reset --hard discards"*) _sous_id='git-reset-hard' ;;
+    *"gh auth token prints"*) _sous_id='gh-token' ;;
+    *"too long to check"*) _sous_id='too-long' ;;
+    *) _sous_id='other' ;;
+  esac
+}
+
+# Project rules, written by the user in .claude/hooks/sous.rules (the template's
+# Edit(.claude/hooks/**) deny and the tamper check keep the agent out of it):
+#   block <name> <ERE>       block what the ERE finds anywhere in the command
+#   allow <rule-id> <ERE>    lift rule <rule-id> when the ERE matches the WHOLE command
+# $1 file, $2 block|allow, $3 rule id (allow), $4 command. A block match sets
+# _sous_pr and _sous_prid. An ERE bash can't compile matches nothing (doctor says so).
+_sous_project_rule() {
+  local line kind name re
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z $line || $line == \#* ]] && continue
+    kind=${line%%[[:space:]]*}; line="${line#"$kind"}"; line="${line#"${line%%[![:space:]]*}"}"
+    name=${line%%[[:space:]]*}; re="${line#"$name"}"; re="${re#"${re%%[![:space:]]*}"}"
+    [[ -n $name && -n $re && $kind == "$2" ]] || continue
+    if [[ $2 == block ]]; then
+      if [[ $4 =~ $re ]]; then
+        _sous_pr="BLOCKED (sous): project rule $name in .claude/hooks/sous.rules. Ask the user."
+        _sous_prid="project:$name"
+        return 0
+      fi
+    elif [[ $name == "$3" && $4 =~ ^($re)$ ]]; then
+      return 0
+    fi
+  done <"$1"
   return 1
 }
 
@@ -660,6 +734,13 @@ _sous_match() {
     echo "BLOCKED (sous): sous accept marks plugin changes reviewed and sous uninstall turns the harness off. Show the user; they run it."
     return 1
   fi
+  # `sous probe --record` and `sous gate --ack-blocks` write down that the user
+  # checked something; an agent running them would vouch for itself.
+  local re_record="(^|[;&|(])[[:space:]]*${pre}([^[:space:]]*/)?sous[[:space:]]+(probe|gate)([[:space:]]+[^;&|[:space:]]+)*[[:space:]]+(--record|--ack-blocks)([[:space:]=]|\$)"
+  if [[ $norm =~ $re_record ]]; then
+    echo "BLOCKED (sous): sous probe --record and sous gate --ack-blocks record the user's say-so. Show the user; they run it."
+    return 1
+  fi
 
   # 7. Building a command out of sight: decode or fetch, then run it.
   #    A pipe (not ||) into a shell, through sudo/env/VAR=, or a fetch piped into
@@ -953,7 +1034,7 @@ _sous_heredoc_line() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -uo pipefail
   if [[ ${1:-} == --version ]]; then echo "sous-guard $SOUS_GUARD_VERSION"; exit 0; fi
-  input=$(cat)
+  IFS= read -r -d '' input || true   # builtin read: no cat fork on every Bash call
   # Regex, not ${input//[[:space:]]/}: that substitution is quadratic in bash 3.2.
   [[ $input =~ [^[:space:]] ]] || exit 0
   if command -v jq >/dev/null 2>&1; then

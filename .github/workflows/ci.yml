@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 jobs:
   test:
@@ -12,20 +13,20 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: shellcheck
         if: runner.os == 'Linux'
         run: shellcheck -S warning hooks/*.sh bin/tests-ran bin/tests-weakened docs/demo.sh tests/*.sh evals/*/setup.sh
       - name: eval scaffolds build and their fixture tests pass
         if: runner.os == 'Linux'
         run: |
-          python3 -m pip install -q pytest
+          python3 -m pip install -q pytest==9.2.0
           for s in evals/*/setup.sh; do
             d=$(mktemp -d); (cd "$d" && sh "$GITHUB_WORKSPACE/$s" && if [ -d tests ]; then python3 -m pytest -q; fi)
           done
       - name: ruff
         if: runner.os == 'Linux'
-        run: pipx run ruff check bin/sous lib
+        run: pipx run ruff==0.17.4 check bin/sous lib
       - name: guard table
         run: bash tests/sous-guard.test.sh
       - name: red-team corpus
@@ -59,7 +60,7 @@ jobs:
       - name: validate plugin
         if: runner.os == 'Linux'
         run: |
-          npm install -g @anthropic-ai/claude-code >/dev/null
+          npm install -g @anthropic-ai/claude-code@2.1.322 >/dev/null
           for t in . .claude-plugin/plugin.json .claude-plugin/marketplace.json commands agents skills mods/handoff plugins/*/; do
             claude plugin validate "$t" --strict
           done
@@ -106,11 +107,11 @@ jobs:
       run:
         working-directory: plugins/${{ matrix.plugin }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22.13.0
       - name: setup
@@ -121,7 +122,7 @@ jobs:
   marketplace:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: shape (offline, blocking)
         run: python3 bin/sous marketplace-check --offline
       - name: pinned refs resolve to their shas (network failure only warns)

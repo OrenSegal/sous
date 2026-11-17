@@ -12,8 +12,11 @@ DEFAULT_LOG = os.path.expanduser("~/.claude/sous/blocks.tsv")
 
 REPORT_LOOP = """
 How to act on this (the guard improves only through the corpus):
-  false positive  add the benign command as `check 0` in tests/adversarial.test.sh,
-                  watch it fail, then narrow the rule until it passes
+  false positive  in this project only: add `allow <rule-id> <ERE>` to
+                  .claude/hooks/sous.rules (you write it; the agent can't), the
+                  ERE matching the whole command. For everyone: add the command
+                  as `check 0` in tests/adversarial.test.sh, watch it fail, then
+                  narrow the rule until it passes
   bypass seen     add it as `check 2` first (red), then widen the rule (green)
   rule never      a rule with zero hits for months is a candidate to delete;
   fires           fewer rules = faster guard, less to trust
@@ -46,7 +49,8 @@ def commands(log, days, n=10):
         for line in f:
             cols = line.rstrip("\n").split("\t")
             if len(cols) >= 4 and cols[0].isdigit() and int(cols[0]) >= cutoff and cols[1] and cols[3]:
-                out.append((short_reason(cols[1]), cols[3]))
+                rule = f" [rule {cols[4]}]" if len(cols) > 4 and cols[4] else ""
+                out.append((short_reason(cols[1]) + rule, cols[3]))
     return out[-n:]
 
 

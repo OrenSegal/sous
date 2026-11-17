@@ -503,6 +503,10 @@ printf 'def test_a():\n    assert add(1, 1) == 2\n' >"$repo2/tests/test_a.py"
 g2 init -q -b main; g2 add -A; g2 commit -qm base; g2 mv tests/test_a.py attic/test_a.py
 out=$(cd "$repo2" && "$BASH" "$TOOL" 2>&1); rc=$?
 case "$rc:$out" in 1:*moved*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); printf 'FAIL git mv out of tests/: exit %s\n%s\n' "$rc" "$out" >&2 ;; esac
+# A move inside tests/ is clean even where the user's git turned rename detection off.
+g2 reset -q --hard; mkdir -p "$repo2/tests/unit"; g2 mv tests/test_a.py tests/unit/test_a.py
+out=$(cd "$repo2" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.renames GIT_CONFIG_VALUE_0=false "$BASH" "$TOOL" 2>&1); rc=$?
+if [ "$rc" = 0 ]; then pass=$((pass + 1)); else fail=$((fail + 1)); printf 'FAIL move within tests/ with diff.renames=false: want exit 0, got %s\n%s\n' "$rc" "$out" >&2; fi
 
 # Exit codes for usage: a missing git repository must not read as clean.
 d="$WORK/notrepo"; mkdir "$d"
