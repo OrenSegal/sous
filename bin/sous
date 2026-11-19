@@ -1193,7 +1193,7 @@ def uninstall(root, dry_run):
 
 # ------------------------------------------------------------ marketplace-check
 NET_ERRORS = re.compile(r"could not resolve host|timed out|failed to connect|connection (refused|reset)|"
-                        r"network is unreachable|temporary failure|ssl|tls|proxy", re.I)
+                        r"network is unreachable|temporary failure|ssl|tls|proxy|connect tunnel failed", re.I)
 
 
 def marketplace_shape(repo):
