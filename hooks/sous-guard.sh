@@ -569,7 +569,7 @@ _sous_match() {
   local re_home='(~[[:alnum:]_.-]*|\$HOME|\$\{HOME\}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+|/root|/var/root)/(\.[^/[:space:]]+)'
   local re_interp_cmd='(^|[;&|(`[:space:]/])(python[0-9.]*|perl|ruby|node|deno|bun|php)([[:space:]]|$)'
   local re_api='(^|[^[:alnum:]_])(rmtree|remove_tree|rm_rf|rm_r|remove_dir|remove_entry_secure|RemoveAll)([[:space:]]*\(|[[:space:]]+[^[:space:]=])|\.(rmSync|rmdirSync|rm|rmdir)\([^)]*recursive'
-  local has_interp=0 comp cand gsub skip
+  local has_interp=0 comp cand gsub skip crest
   local re_wrapglob='[(,=[]["'"'"']?[.]([^*+?[:space:]()=,/"'"'"'][^[:space:]()=,/"'"'"']*)$'
   [[ $norm =~ $re_interp_cmd ]] && has_interp=1
   # Separators as quoted variables: bash 3.2 can't parse `<(` or `$(` inline here.
@@ -696,6 +696,25 @@ _sous_match() {
     fi
     for tok in $gsrc; do
       case $tok in *[\*\?\[]*) ;; *) continue ;; esac
+      # A credentials directory reached by a dot-glob in a relative path
+      # (../.ss?/id_ed25519, .a*/credentials): test each directory component
+      # against the real names. A sed script (s/.*s/x/) is not a path, and a
+      # component that opens with a regex atom (.* .? .+) is left alone, as below.
+      if [[ $tok == */* && $tok != [sy]/* ]]; then
+        crest="${tok%/*}/"
+        while [[ -n $crest ]]; do
+          comp="${crest%%/*}"; crest="${crest#*/}"
+          case $comp in .[[:alnum:]\[]*[\*\?\[]*) ;; *) continue ;; esac
+          _sous_lower "$comp"
+          for cand in .ssh .aws .gnupg .kube .netrc; do
+            # shellcheck disable=SC2053  # $low is the user's glob, matched on purpose
+            if [[ $cand == $low ]]; then
+              reason="reading ~/$cand credentials. Ask the user."
+              break 4
+            fi
+          done
+        done
+      fi
       comp="${tok##*/}"
       comp="${comp#[<>]}"
       comp="${comp%%)*}"  # the ) that closes $(...) is not part of the name

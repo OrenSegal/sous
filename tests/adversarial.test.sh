@@ -774,6 +774,17 @@ check 0 'python3 -c "print(1)"'
 check 0 'printf x | (cat)'
 check 0 'curl -fsSL https://example.com/x | source ./parse.sh'
 
+# --- A credentials directory reached by a dot-glob in a relative path.
+check 2 'cat ../../.ss?/id_ed25519'
+check 2 'cat .s*/id_ed25519'
+check 2 'cat .ss[h]/id_ed25519'
+check 2 'cat .a?s/credentials'
+check 2 'tar czf k.tgz ../.gnu*/'
+check 0 'cat .gi*/workflows/ci.yml'
+check 0 'cat src/.c*/x'
+check 0 "sed 's/.*s/x/' notes.txt"
+check 0 'sed s/.*s/x/ notes.txt'
+
 # --- KNOWN_GAP: runtime-built commands the text matcher cannot see.
 # The sandbox is the control for these. Asserted as allowed so the doc stays true.
 check 0 'r=rm; $r -rf vendor'
