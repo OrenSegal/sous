@@ -760,20 +760,27 @@ _sous_match() {
   # 7. Building a command out of sight: decode or fetch, then run it.
   #    A pipe (not ||) or >( ) into a shell, through sudo/env/VAR=, or a fetch piped into
   #    an interpreter reading stdin; a shell fed $(fetch), <(fetch) or <<<.
-  local wrap='(([^[:space:]]*/)?(sudo|env|command|exec|nohup|time|doas)([[:space:]]+-[^[:space:]]*)*[[:space:]]+|[[:alpha:]_][[:alnum:]_]*=[^[:space:]]*[[:space:]]+)*'
+  #    A launcher may carry flags, a number (timeout 10, nice -n 5) or a user (sudo -u root).
+  local wrap='(([^[:space:]]*/)?(sudo|env|command|exec|nohup|time|doas|nice|ionice|timeout|stdbuf|setsid|busybox|chronic|unbuffer)([[:space:]]+((-[ug]|--user|--group)[[:space:]]+[^-[:space:]][^[:space:]]*|-[^[:space:]]*|[0-9][^[:space:]]*))*[[:space:]]+|[[:alpha:]_][[:alnum:]_]*=[^[:space:]]*[[:space:]]+)*'
   local shells='([^[:space:]]*/)?(ba|z|da|k|fi|c|tc)?sh'
   local interp='([^[:space:]]*/)?(python[0-9.]*|perl|ruby|node|deno|bun|php)'
   local fetch='(curl|wget|base64|xxd|openssl|fetch|nc|ncat|gunzip|zcat|aria2c|http|xh)'
   # A shell reads stdin as code only with no script operand, a flag (-s, -c "$(cat)", -),
   # or /dev/stdin; `printf x | bash run.sh` runs the file and feeds it data.
-  local re_shell_pipe="((^|[^|])\\|&?|>\\()[[:space:]]*${wrap}${shells}([[:blank:]]*(\$|[;&|)${lf}])|[[:blank:]]+(-|/dev/stdin|/dev/fd/0|/proc/self/fd/0))"
+  local re_shell_pipe="((^|[^|])\\|&?|>\\()[[:space:]]*([({][[:space:]]*)*${wrap}${shells}([[:blank:]]*(\$|[;&|)${lf}])|[[:blank:]]+(-|/dev/stdin|/dev/fd/0|/proc/self/fd/0))"
   local re_interp_pipe="(^|[^[:alnum:]_])${fetch}[[:space:]][^;&${lf}]*[^|]\\|&?[[:space:]]*${wrap}${interp}(([[:space:]]+(-|-[[:alpha:]]{1,3}|--))*)[[:space:]]*(\$|[;&|)${lf}])"
   local re_shell_subst="(^|[^[:alnum:]_])((ba|z|da|k|fi)?sh|eval|source)[[:space:]]+([^;&|${lf}]*[[:space:]])?(\\\$\\(|${bt})[[:space:]]*${wrap}${fetch}([[:space:]]|\$)"
   local re_procsub="(^|[^[:alnum:]_.])((ba|z|da|k|fi)?sh|source|\\.|${interp})([[:space:]]+-[^[:space:]]*)*[[:space:]]+(<[[:space:]]*)?<\\("
   local re_herestr="(^|[^[:alnum:]_.])((ba|z|da|k|fi)?sh|${interp})([[:space:]]+-[^[:space:]]*)*[[:space:]]*<<<[^;&|${lf}]*${fetch}"
+  # `| source /dev/stdin` runs the pipe as code too, and an interpreter given
+  # $(fetch) as its -c or -e program runs what was fetched or decoded.
+  local stdin_re='(/dev/stdin|/dev/fd/0|/proc/self/fd/0)'
+  local re_source_pipe="(^|[^|])\\|&?[[:space:]]*([({][[:space:]]*)*${wrap}(source|\\.)[[:blank:]]+${stdin_re}([[:space:];&|)]|\$)"
+  local re_interp_subst="(^|[^[:alnum:]_.-])${interp}([[:space:]]+-[^[:space:]]*)*[[:space:]]+(-c|-e|-r|-p|--eval|--print)[[:space:]]+(\\\$\\(|${bt})[[:space:]]*${wrap}${fetch}([[:space:]]|\$)"
   local re_eval_src='eval[[:space:]].*(base64|xxd|openssl|curl|wget|printf[[:space:]]+.*x[0-9a-fA-F])'
   if [[ $norm =~ $re_shell_pipe || $norm =~ $re_interp_pipe || $norm =~ $re_shell_subst ||
-        $norm =~ $re_procsub || $norm =~ $re_herestr || $norm =~ $re_eval_src ]]; then
+        $norm =~ $re_procsub || $norm =~ $re_herestr || $norm =~ $re_eval_src ||
+        $norm =~ $re_source_pipe || $norm =~ $re_interp_subst ]]; then
     echo "BLOCKED (sous): piping generated or downloaded text into a shell. Save it to a file, show it, then run it."
     return 1
   fi
