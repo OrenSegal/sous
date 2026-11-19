@@ -319,7 +319,10 @@ _sous_match() {
   #    Only for git/gh, and only a message that can't expand ($ or backtick
   #    inside double quotes runs code, so that text stays in the scan).
   local sq="'" dq='"' bt='`' lf=$'\n' dslash='//' sslash='/'
-  local re_msg_pre="((^|[;&|(${lf}])[[:space:]]*(git|gh)[[:space:]]([^;&|${sq}${dq}${bt}\$]*[[:space:]])?)"
+  #    The command head stays on git's own line (a backslash-newline continues
+  #    it): on a later line, -t or -m is another program's flag, and what
+  #    follows it is that program's argument, not a message.
+  local re_msg_pre="((^|[;&|(${lf}])[[:space:]]*(git|gh)[[:blank:]](([^;&|${sq}${dq}${bt}\$${lf}]|\\\\${lf})*([[:blank:]]|\\\\${lf}))?)"
   local re_msg_flag='(-[[:alpha:]]*m|-[bt]|--message|--body|--title|--notes)[[:space:]]+'
   local re_msg="${re_msg_pre}${re_msg_flag}(${dq}[^${dq}\$${bt}\\\\]*${dq}|${sq}[^${sq}]*${sq})"
   # Walk forward, keeping the command head so its next flag is still read as a message.

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Guard, bypass closed: a `git` or `gh` line no longer lends its message flags to the next line. After `git status`, a second line `cat -t '.env'` had its quoted argument hidden as if it were a commit message, so the secrets and delete rules never saw it. A backslash-continued `git commit \\` + `-m "..."` is still read as a message.
 - Guard, delete bypasses closed: GNU `rm` takes any prefix of a long option, so `rm --r --f src` and `rm -r --f src` are recursive force deletes and now block. `find ... -exec rm {} +` (also `-execdir`, `-ok`) blocks like `find -delete`, which it equals.
 - Guard, tamper bypasses closed: a harness write behind a launcher, a negation or a subshell blocks (`nohup cp x .claude/settings.json`, `sudo -u root cp`, `timeout 5`, `env -i`, `! cp`, `(cp ...)`; the check read the launcher as the program). So do `mv .claude elsewhere`, `rm -r .claude` and `chmod -R 000 .claude`, a download written to the path (`curl -o`, `wget -O`), `gawk -i inplace`, and `git rm` / `git mv` of a harness file. Reads behind the same launchers still run.
 - Guard, bypass closed: output process substitution is a command boundary. `ls >(cat .env)` read a secrets file behind an allowlisted program, `echo {} > >(tee .claude/settings.json)` wrote a harness file, and `curl ... > >(sh)` ran fetched text; all three passed because only `$(` and `<(` split a command.

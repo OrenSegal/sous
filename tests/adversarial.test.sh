@@ -740,6 +740,16 @@ check 0 'find . -name "*.o" -exec ls -l {} +'
 check 0 'find . -name "*.rm" -exec cat {} +'
 check 0 'find . -print; echo -exec rm'
 
+# --- A git line does not lend its message flags to the next line: -t, -m and -b
+# on a later command are that command's own flags.
+check 2 $'git status\ncat -t \'.env\''
+check 2 $'git status\nxargs -t \'rm\' -rf vendor < /dev/null'
+check 2 $'gh pr view\nhead -b \'.env\''
+check 2 $'git\ncat -t \'.env\''
+check 0 $'git status\ngit commit -m "drop rm -rf from the script"'
+check 0 $'git commit \\\n  -m "drop rm -rf from the script"'
+check 0 $'git add -A\ngh pr create --title "x" --body "remove rm -rf vendor"'
+
 # --- KNOWN_GAP: runtime-built commands the text matcher cannot see.
 # The sandbox is the control for these. Asserted as allowed so the doc stays true.
 check 0 'r=rm; $r -rf vendor'
