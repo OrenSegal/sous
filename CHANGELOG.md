@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Guard, delete bypasses closed: GNU `rm` takes any prefix of a long option, so `rm --r --f src` and `rm -r --f src` are recursive force deletes and now block. `find ... -exec rm {} +` (also `-execdir`, `-ok`) blocks like `find -delete`, which it equals.
 - Guard, tamper bypasses closed: a harness write behind a launcher, a negation or a subshell blocks (`nohup cp x .claude/settings.json`, `sudo -u root cp`, `timeout 5`, `env -i`, `! cp`, `(cp ...)`; the check read the launcher as the program). So do `mv .claude elsewhere`, `rm -r .claude` and `chmod -R 000 .claude`, a download written to the path (`curl -o`, `wget -O`), `gawk -i inplace`, and `git rm` / `git mv` of a harness file. Reads behind the same launchers still run.
 - Guard, bypass closed: output process substitution is a command boundary. `ls >(cat .env)` read a secrets file behind an allowlisted program, `echo {} > >(tee .claude/settings.json)` wrote a harness file, and `curl ... > >(sh)` ran fetched text; all three passed because only `$(` and `<(` split a command.
 - Customize without forking: `.claude/hooks/sous.rules` adds project blocks (`block <name> <ERE>`) and lifts one guard rule for one whole-command shape (`allow <rule-id> <ERE>`). Only the user can write it, since the template's deny rule and the tamper check keep the agent out. `tamper`, `sous-accept`, `sous-record` and `too-long` never lift. Doctor lists the file's lines and fails on any the guard would skip.

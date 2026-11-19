@@ -721,6 +721,25 @@ check 0 'git diff -- .claude/settings.json'
 check 0 'git log --oneline -- .mcp.json'
 check 0 'git checkout -- .claude/settings.json'
 
+# --- GNU rm takes any unambiguous prefix of a long option: --r is --recursive, --f is --force.
+check 2 'rm --r --f vendor'
+check 2 'rm -r --f vendor'
+check 2 'rm --recursive --fo vendor'
+check 2 'rm --recur -f vendor'
+check 2 'rm --forc --recursiv vendor'
+check 0 'rm --f a.txt'
+check 0 'rm --verbose a.txt'
+check 0 'rm --r --f node_modules'
+# find hands every match to rm: the same sweep as -delete.
+check 2 'find . -type f -exec rm -f {} +'
+check 2 'find . -type f -exec rm {} \;'
+check 2 'find . -name "*.o" -execdir /bin/rm {} +'
+check 2 "find x -name ';' -exec rm {} +"
+check 2 'find . -type f -ok rm {} \;'
+check 0 'find . -name "*.o" -exec ls -l {} +'
+check 0 'find . -name "*.rm" -exec cat {} +'
+check 0 'find . -print; echo -exec rm'
+
 # --- KNOWN_GAP: runtime-built commands the text matcher cannot see.
 # The sandbox is the control for these. Asserted as allowed so the doc stays true.
 check 0 'r=rm; $r -rf vendor'

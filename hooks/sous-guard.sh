@@ -5,7 +5,7 @@
 # rules match the command text Claude usually writes, not the program:
 #   delete   rm with recursive+force (any spelling or path, flags after operands,
 #            $'\x..', ${IFS}, line continuations), rimraf, git clean -f or with
-#            clean.requireForce off, git reset --hard, find -delete, rsync --del*,
+#            clean.requireForce off, git reset --hard, find -delete or -exec rm, rsync --del*,
 #            rmtree/rm_rf/rmSync-recursive under an interpreter; an rm -rf of
 #            build output only (node_modules, dist, .build, ...) passes
 #   push    --force*, -f, +ref, --mirror, --delete, -d, --prune, :ref, and
@@ -464,8 +464,9 @@ _sous_match() {
     flags=" ${BASH_REMATCH[3]//,/ } "
     rmm="${BASH_REMATCH[0]}"; rmpre="${BASH_REMATCH[1]}"; prev="$rest"
     _sous_cut "$rest" "$rmm"; rest="$_sous_r"
-    if [[ $flags =~ [[:space:]](-[[:alpha:]]*[rR]|--recursive)[[:space:]] ]] &&
-       [[ $flags =~ [[:space:]](-[[:alpha:]]*f[[:alpha:]]*|--force)[[:space:]] ]] ||
+    # GNU rm takes any prefix of a long option: --r is --recursive, --f is --force.
+    if [[ $flags =~ [[:space:]](-[[:alpha:]]*[rR]|--r[a-z]*)[[:space:]] ]] &&
+       [[ $flags =~ [[:space:]](-[[:alpha:]]*f[[:alpha:]]*|--f[a-z]*)[[:space:]] ]] ||
        [[ $flags =~ [[:space:]]-[[:alpha:]]*[rR][[:alpha:]]*[[:space:]] && $flags =~ [[:space:]]-[[:alpha:]]*f ]]; then
       # Build output only, with rm first in its command (not behind xargs, sudo,
       # find -exec, sh -c, which add or hide targets).
@@ -513,14 +514,16 @@ _sous_match() {
   # not end it: find x -name ';' -delete. rsync takes any abbreviation of a long
   # option, and --del is an option itself; --delay-updates is not a delete.
   local re_find='(^|[^[:alnum:]_])find[[:space:]][^|;&]*-delete'
+  # -exec rm on every match is the same sweep, with or without -r and -f.
+  local re_findrm='(^|[^[:alnum:]_])find[[:space:]][^|;&]*-(exec|execdir|ok|okdir)[[:space:]]+([^[:space:];&|]*/)?g?rm([[:space:]]|$)'
   local re_rsync='(^|[^[:alnum:]_])rsync[[:space:]]([^|;&]*[[:space:]])?--(del|dele[-[:alnum:]]*)([[:space:]=]|$)'
   local argtext=""
-  if [[ $norm == *find*-delete* || $norm == *rsync*--del* ]]; then
+  if [[ $norm == *find*-delete* || $norm == *find*-exec* || $norm == *find*-ok* || $norm == *rsync*--del* ]]; then
     argtext="$scan"
     _sous_quote_globs "$argtext" && argtext="$_sous_q"
     argtext=$(printf '%s' "$argtext" | sed -e 's/\\[;|&]/_/g' | tr -d "\"'\\\\" | tr -d "$phs")
   fi
-  if [[ $norm =~ $re_find || $argtext =~ $re_find ]]; then
+  if [[ $norm =~ $re_find || $argtext =~ $re_find || $norm =~ $re_findrm || $argtext =~ $re_findrm ]]; then
     echo "BLOCKED (sous): find -delete. Run the same find with -print, then delete named paths."
     return 1
   fi
