@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `sous` ends quietly when its reader closes the pipe (`sous doctor DIR | head -1`): it printed a `BrokenPipeError` traceback and exited 1. It now exits 141 with nothing on stderr.
 - Guard, secrets: a credentials directory reached by a dot-glob in a relative path blocks (`cat ../../.ss?/id_ed25519`, `cat .a?s/credentials`). The glob test covered only `~/` paths and the last path component.
 - Guard, fetch-into-shell bypasses closed: the pipe is followed through more launchers and their arguments (`| sudo -u root bash`, `| nice -n 5 sh`, `| timeout 10 sh`, `| busybox sh`, `| stdbuf -o0 bash`), into a group (`| (bash)`, `| { bash; }`) and into `source /dev/stdin`; an interpreter handed the fetched or decoded text as its program blocks too (`python3 -c "$(curl ...)"`, `node -e "$(curl ...)"`). `python3 fetch.py "$(curl ...)"`, which passes it as data, still runs.
 - Guard, bypass closed: a `git` or `gh` line no longer lends its message flags to the next line. After `git status`, a second line `cat -t '.env'` had its quoted argument hidden as if it were a commit message, so the secrets and delete rules never saw it. A backslash-continued `git commit \\` + `-m "..."` is still read as a message.

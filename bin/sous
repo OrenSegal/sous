@@ -2637,4 +2637,13 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        code = main(sys.argv[1:])
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader closed the pipe (`sous doctor | head -1`, `| grep -q`): not an
+        # error. Point stdout at devnull so the interpreter's exit flush stays quiet,
+        # and exit as a SIGPIPE-killed process would.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 141
+    sys.exit(code)

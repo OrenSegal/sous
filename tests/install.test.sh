@@ -30,6 +30,8 @@ p1="$WORK/fresh"; mkdir -p "$p1"
 expect "doctor before install" 1 python3 "$SOUS" doctor "$p1"
 expect "install" 0 python3 "$SOUS" install "$p1"
 expect "doctor after install" 0 python3 "$SOUS" doctor "$p1"
+# A reader that closes the pipe early (| head -1, | grep -q) is not an error to report.
+expect "a closed pipe ends sous without a traceback" 0 sh -c 'PYTHONUNBUFFERED=1 python3 "$1" doctor "$2" 2>"$3" | head -1 >/dev/null; ! grep -q "Traceback\|BrokenPipe" "$3"' _ "$SOUS" "$p1" "$WORK/pipe.err"
 expect "doctor fails a guard over its latency budget" 0 sh -c 'SOUS_GUARD_MS=0 python3 "$1" doctor "$2" | grep -q "over 0ms (SOUS_GUARD_MS)"' _ "$SOUS" "$p1"
 pf="$WORK/failopen"; mkdir -p "$pf"; python3 "$SOUS" install "$pf" >/dev/null
 jq 'del(.hooks.PreToolUse[0].hooks[0].onFailure)' "$pf/.claude/settings.json" >"$WORK/fo.json" && cp "$WORK/fo.json" "$pf/.claude/settings.json"
@@ -481,7 +483,9 @@ repo="$(cd "$HERE/.." && pwd)"
 plug() { printf '{"version": 2, "plugins": {"sous@sous": [{"scope": "user", "installPath": "%s"%s}]}}\n' "$repo" "${1:-}" > "$h3/.claude/plugins/installed_plugins.json"; }
 asplug() { env -u CI -u GITHUB_ACTIONS HOME="$h3" python3 "$SOUS" "$@"; }
 says() { # $1 pattern, rest = sous args run as the plugin user
-  local pat="$1"; shift; asplug "$@" | grep -q "$pat"; }
+  # Capture, then match: `| grep -q` closes the pipe at the first hit, and under
+  # pipefail a sous still writing (PYTHONUNBUFFERED=1) would fail the row.
+  local pat="$1" out; shift; out=$(asplug "$@") && grep -q "$pat" <<<"$out"; }
 plug
 v1="$WORK/viaplugin"; mkdir -p "$v1"
 expect "install with the plugin names it" 0 says "guard comes from plugin sous@sous" install "$v1"
