@@ -492,13 +492,13 @@ _sous_match() {
     flags=" ${BASH_REMATCH[2]} "
     _sous_lower "${BASH_REMATCH[1]}"
     _sous_cut "$rest" "${BASH_REMATCH[0]}"; rest="$_sous_r"
-    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--fo[a-z]*) || $low =~ $re_noforce ]] &&
+    if [[ $flags =~ [[:space:]](-[[:alpha:]]*f|--f[a-z]*) || $low =~ $re_noforce ]] &&
        ! [[ $flags =~ [[:space:]](-[[:alpha:]]*n|--dr[a-z-]*) ]]; then
       echo "BLOCKED (sous): git clean deletes untracked work. Run git clean -n and show the user the list."
       return 1
     fi
   done
-  local re_reset='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?reset([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+--ha[rd]*([[:space:]]|$)'
+  local re_reset='(^|[^[:alnum:]_-])git[[:space:]]+([^|;&]*[[:space:]=])?reset([[:blank:]]+[^[:space:];&|]+)*[[:blank:]]+--h[ard]*([[:space:]]|$)'
   if [[ $norm =~ $re_reset ]]; then
     echo "BLOCKED (sous): git reset --hard discards uncommitted work. Use git stash, or ask the user."
     return 1

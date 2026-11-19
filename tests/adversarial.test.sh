@@ -785,6 +785,16 @@ check 0 'cat src/.c*/x'
 check 0 "sed 's/.*s/x/' notes.txt"
 check 0 'sed s/.*s/x/ notes.txt'
 
+# --- git takes any unambiguous prefix of a long option, as GNU rm does:
+# `git reset --h` is --hard and `git clean --f` is --force (checked against git 2.43).
+check 2 'git reset --h'
+check 2 'git reset --h HEAD~1'
+check 2 'git clean --f'
+check 2 'git clean --f -d'
+check 0 'git reset --help'
+check 0 'git reset --soft HEAD~1'
+check 0 'git clean --dry-run'
+
 # --- KNOWN_GAP: runtime-built commands the text matcher cannot see.
 # The sandbox is the control for these. Asserted as allowed so the doc stays true.
 check 0 'r=rm; $r -rf vendor'

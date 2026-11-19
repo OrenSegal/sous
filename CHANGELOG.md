@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Guard, bypass closed: git takes any unambiguous prefix of a long option, so `git reset --h` is `--hard` and `git clean --f` is `--force`. Both passed; both block now. `git reset --help` still runs.
 - `marketplace-check` reads curl's `CONNECT tunnel failed, response 403` (a proxy that refuses the host) as an unreachable remote, exit 75, not as a failed pin, exit 1.
 - `sous` ends quietly when its reader closes the pipe (`sous doctor DIR | head -1`): it printed a `BrokenPipeError` traceback and exited 1. It now exits 141 with nothing on stderr.
 - Guard, secrets: a credentials directory reached by a dot-glob in a relative path blocks (`cat ../../.ss?/id_ed25519`, `cat .a?s/credentials`). The glob test covered only `~/` paths and the last path component.
