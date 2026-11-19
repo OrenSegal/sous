@@ -564,11 +564,12 @@ _sous_match() {
   local re_wrapglob='[(,=[]["'"'"']?[.]([^*+?[:space:]()=,/"'"'"'][^[:space:]()=,/"'"'"']*)$'
   [[ $norm =~ $re_interp_cmd ]] && has_interp=1
   # Separators as quoted variables: bash 3.2 can't parse `<(` or `$(` inline here.
+  # >( starts a command as well: `ls >(cat .env)` runs cat beside ls.
   local nl=$'\n' sep
   if (( ${#segs} > 2048 )); then
-    segs=$(printf '%s' "$segs" | awk '{ gsub(/[;|&`]|\$\(|<\(/, "\n"); print }')
+    segs=$(printf '%s' "$segs" | awk '{ gsub(/[;|&`]|\$\(|[<>]\(/, "\n"); print }')
   else
-    for sep in '&&' '||' ';' '|' '&' '$(' '<(' '`'; do
+    for sep in '&&' '||' ';' '|' '&' '$(' '<(' '>(' '`'; do
       segs="${segs//"$sep"/$nl}"
     done
   fi
@@ -748,7 +749,7 @@ _sous_match() {
   fi
 
   # 7. Building a command out of sight: decode or fetch, then run it.
-  #    A pipe (not ||) into a shell, through sudo/env/VAR=, or a fetch piped into
+  #    A pipe (not ||) or >( ) into a shell, through sudo/env/VAR=, or a fetch piped into
   #    an interpreter reading stdin; a shell fed $(fetch), <(fetch) or <<<.
   local wrap='(([^[:space:]]*/)?(sudo|env|command|exec|nohup|time|doas)([[:space:]]+-[^[:space:]]*)*[[:space:]]+|[[:alpha:]_][[:alnum:]_]*=[^[:space:]]*[[:space:]]+)*'
   local shells='([^[:space:]]*/)?(ba|z|da|k|fi|c|tc)?sh'
@@ -756,7 +757,7 @@ _sous_match() {
   local fetch='(curl|wget|base64|xxd|openssl|fetch|nc|ncat|gunzip|zcat|aria2c|http|xh)'
   # A shell reads stdin as code only with no script operand, a flag (-s, -c "$(cat)", -),
   # or /dev/stdin; `printf x | bash run.sh` runs the file and feeds it data.
-  local re_shell_pipe="(^|[^|])\\|&?[[:space:]]*${wrap}${shells}([[:blank:]]*(\$|[;&|)${lf}])|[[:blank:]]+(-|/dev/stdin|/dev/fd/0|/proc/self/fd/0))"
+  local re_shell_pipe="((^|[^|])\\|&?|>\\()[[:space:]]*${wrap}${shells}([[:blank:]]*(\$|[;&|)${lf}])|[[:blank:]]+(-|/dev/stdin|/dev/fd/0|/proc/self/fd/0))"
   local re_interp_pipe="(^|[^[:alnum:]_])${fetch}[[:space:]][^;&${lf}]*[^|]\\|&?[[:space:]]*${wrap}${interp}(([[:space:]]+(-|-[[:alpha:]]{1,3}|--))*)[[:space:]]*(\$|[;&|)${lf}])"
   local re_shell_subst="(^|[^[:alnum:]_])((ba|z|da|k|fi)?sh|eval|source)[[:space:]]+([^;&|${lf}]*[[:space:]])?(\\\$\\(|${bt})[[:space:]]*${wrap}${fetch}([[:space:]]|\$)"
   local re_procsub="(^|[^[:alnum:]_.])((ba|z|da|k|fi)?sh|source|\\.|${interp})([[:space:]]+-[^[:space:]]*)*[[:space:]]+(<[[:space:]]*)?<\\("
@@ -850,9 +851,9 @@ _sous_tamper() {
   local re_dir='^([^[:space:]]*/)?\.claude/?$'
   local nl=$'\n' sep had_noglob=0 hit=0
   if (( ${#t} > 2048 )); then
-    t=$(printf '%s' "$t" | awk '{ gsub(/[;|&`]|\$\(|<\(/, "\n"); print }')
+    t=$(printf '%s' "$t" | awk '{ gsub(/[;|&`]|\$\(|[<>]\(/, "\n"); print }')
   else
-    for sep in '&&' '||' ';' '|' '&' '$(' '<(' '`'; do
+    for sep in '&&' '||' ';' '|' '&' '$(' '<(' '>(' '`'; do
       t="${t//"$sep"/$nl}"
     done
   fi
