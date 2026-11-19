@@ -21,7 +21,10 @@
 #   limits   a command too long to read in time is blocked, not waved through
 #   tamper   a Bash write to .claude/settings*.json, .claude/hooks/ or .mcp.json:
 #            redirect, tee, cp/mv/install/ln, sed/perl -i, dd of=, rm/chmod,
-#            an interpreter write call naming the path (temp-dir fixtures pass)
+#            curl -o/wget -O, gawk -i inplace, git rm/mv, each also behind a
+#            launcher (sudo -u x, nohup, timeout 5, xargs) or in a subshell; rm,
+#            mv or chmod of .claude itself; an interpreter write call naming the
+#            path (temp-dir fixtures pass)
 #
 # Two ways to use it:
 #   executed  reads the hook JSON on stdin; exit 2 blocks, stderr goes to the model
@@ -719,7 +722,7 @@ _sous_match() {
   #     sed/perl -i, dd of=, rm/chmod/truncate, and interpreter write calls
   #     naming the path. Reading, git, and paths under /tmp or $TMPDIR (test
   #     fixtures) pass. A path built in a variable or reached after cd is a gap.
-  if [[ $norm == *.claude/* || $norm == *.mcp.json* ]] && ! _sous_tamper "$norm" "$has_interp"; then
+  if [[ $norm == *.claude* || $norm == *.mcp.json* ]] && ! _sous_tamper "$norm" "$has_interp"; then
     echo "BLOCKED (sous): writing a harness file (.claude/settings*.json, .claude/hooks/, .mcp.json) from Bash. Show the user the change; they make it."
     return 1
   fi
@@ -793,7 +796,7 @@ _sous_rm_build() {
 # when an interpreter runs in it. Step 6b of _sous_match.
 _sous_tamper() {
   local LC_ALL=C
-  local t="$1" out="" rest m seg tok first n args target src inplace
+  local t="$1" out="" rest m seg tok first n args target src inplace wrapped gsub skip
   # Repeated slashes are one separator to the OS (.claude//settings.json is
   # .claude/settings.json), so collapse them before the path patterns match.
   local _dslash='//' _sslash='/'
@@ -809,7 +812,7 @@ _sous_tamper() {
       m="${BASH_REMATCH[0]}"
       out+="${rest%%"$m"*}"
       _sous_cut "$rest" "$m"; rest="$_sous_r"
-      if [[ $m == *.claude/* || $m == *.mcp.json* ]]; then out+="${BASH_REMATCH[1]}TMP"; else out+="$m"; fi
+      if [[ $m == *.claude/* || $m == *.mcp.json* || $m == *.claude ]]; then out+="${BASH_REMATCH[1]}TMP"; else out+="$m"; fi
     done
     t="$out$rest"
   fi
@@ -849,6 +852,7 @@ _sous_tamper() {
   # Per command: the programs that write a path they are given.
   local re_tok="^([^[:space:]]*[/=])?${p}[)]*\$"
   local re_dir='^([^[:space:]]*/)?\.claude/?$'
+  local re_writer='^(tee|sponge|truncate|rm|grm|unlink|chmod|chown|chflags|patch|shred|dd|sed|gsed|perl|ruby|mv|gmv|cp|gcp|install|ginstall|ln|gln|rsync|ditto|curl|wget|aria2c|awk|gawk|git)$'
   local nl=$'\n' sep had_noglob=0 hit=0
   if (( ${#t} > 2048 )); then
     t=$(printf '%s' "$t" | awk '{ gsub(/[;|&`]|\$\(|[<>]\(/, "\n"); print }')
@@ -860,11 +864,19 @@ _sous_tamper() {
   case $- in *f*) had_noglob=1 ;; esac
   set -f
   while IFS= read -r seg; do
-    first="" args=()
+    first="" args=() wrapped=0
     for tok in $seg; do
       if [[ -z $first ]]; then
+        # A subshell or group glued to the program: (cp, {cp.
+        while [[ ${#tok} -gt 1 && $tok == [\(\{]* ]]; do tok="${tok:1}"; done
+        # A launcher runs the program after it, and its flags are not that program.
+        case "${tok##*/}" in
+          sudo|doas|command|builtin|env|nice|ionice|nohup|time|timeout|stdbuf|setsid|exec|xargs|busybox|chronic|unbuffer|caffeinate)
+            wrapped=1; continue ;;
+        esac
         case "$tok" in
-          *=*|sudo|command|env|nice|-n|[0-9]*|do|then|else|time|exec|'{'|'(') continue ;;
+          *=*|-n|[0-9]*|do|then|else|'{'|'('|'!') continue ;;
+          -*) (( wrapped )) && continue ;;
         esac
         first="${tok##*/}"
         continue
@@ -872,9 +884,54 @@ _sous_tamper() {
       args+=("$tok")
     done
     (( ${#args[@]} )) || continue
+    # Behind a launcher the first word may be a flag's value (sudo -u root cp x y):
+    # the program is then the first writer named after it.
+    if (( wrapped )) && ! [[ $first =~ $re_writer ]]; then
+      n=0
+      for tok in "${args[@]}"; do
+        n=$((n + 1))
+        if [[ ${tok##*/} =~ $re_writer ]]; then first="${tok##*/}"; args=("${args[@]:n}"); break; fi
+      done
+      (( ${#args[@]} )) || continue
+    fi
     case $first in
-      tee|sponge|truncate|rm|grm|unlink|chmod|chown|chflags|patch|shred)
+      tee|sponge|truncate|unlink|patch)
         for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
+      rm|grm|chmod|chown|chflags|shred)
+        # The .claude directory itself counts: removing or locking it takes the harness with it.
+        for tok in "${args[@]}"; do [[ $tok =~ $re_tok || $tok =~ $re_dir ]] && { hit=1; break 2; }; done ;;
+      curl|wget|aria2c)
+        # A download written to the path: -o/-O FILE, --output[-document][=]FILE.
+        n=0
+        for tok in "${args[@]}"; do
+          if (( n )); then n=0; [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; continue; fi
+          case $tok in
+            --output=*|--output-document=*) [[ ${tok#*=} =~ $re_tok ]] && { hit=1; break 2; } ;;
+            --output|--output-document|-o|-O|-[[:alnum:]]*[oO]) n=1 ;;
+            -[oO]?*) [[ ${tok:2} =~ $re_tok ]] && { hit=1; break 2; } ;;
+          esac
+        done ;;
+      awk|gawk)
+        inplace=0
+        for tok in "${args[@]}"; do [[ $tok == inplace || $tok == -iinplace || $tok == --include=inplace ]] && inplace=1; done
+        (( inplace )) || continue
+        for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
+      git)
+        # git reads and restores these files freely; rm and mv take them away.
+        gsub="" skip=0
+        for tok in "${args[@]}"; do
+          if (( skip )); then skip=0; continue; fi
+          if [[ -z $gsub ]]; then
+            case $tok in
+              -C|-c|--git-dir|--work-tree|--namespace) skip=1 ;;
+              -*) ;;
+              rm|mv) gsub=$tok ;;
+              *) break ;;
+            esac
+            continue
+          fi
+          [[ $tok =~ $re_tok || $tok =~ $re_dir ]] && { hit=1; break 2; }
+        done ;;
       dd)
         for tok in "${args[@]}"; do [[ $tok == of=* && $tok =~ $re_tok ]] && { hit=1; break 2; }; done ;;
       sed|gsed|perl|ruby)
@@ -887,6 +944,9 @@ _sous_tamper() {
         # or moved into the .claude dir (overwriting one). Covers both because
         # mv is a rename as well as a copy-into-dir.
         for tok in "${args[@]}"; do [[ $tok =~ $re_tok ]] && { hit=1; break 2; }; done
+        # The .claude directory as a source: moved away, the harness goes with it.
+        n=$(( ${#args[@]} - 1 ))
+        for tok in ${args[@]+"${args[@]:0:n}"}; do [[ $tok =~ $re_dir ]] && { hit=1; break 2; }; done
         target="${args[${#args[@]}-1]}"
         if [[ $target =~ $re_dir ]]; then
           for tok in "${args[@]}"; do
