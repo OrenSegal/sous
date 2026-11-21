@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.0
+
+- Payments are held: MCP tools whose name has a payment word (charge, payment, pay, transfer, refund, invoice, checkout, payout, editable in the options), and `stripe` CLI commands that create, pay, confirm, capture, finalize or post one. Tools that start with a read verb (`list_invoices`, `get_payment`) are not.
+- Optional daily allowance, off by default. A payment with a readable amount, in the allowance's currency, that fits in what is left today runs without a pane. It is reserved in the receipts before it runs and committed or released after. Everything else is held.
+- Optional payee allowlist, and a flag on the first payment to a payee in a project.
+- Receipts: one JSON line per decision in `~/.claude/blast-shield/spend/<project>.jsonl`.
+- The hold loop is shared between commands and payments, so a payment waits its turn behind a held command.
+
 
 ## 1.2.2
 

@@ -1,4 +1,6 @@
 {
-  "description": "Blast Shield: a tool.call hook that holds risky Bash commands, and a Pane that shows their blast radius.",
-  "modules": ["./blast-shield.mjs"]
+  "description": "Blast Shield: tool.call hooks that hold risky Bash commands and payment tool calls, and a Pane that shows what they would change.",
+  "modules": [
+    "./blast-shield.mjs"
+  ]
 }

@@ -122,3 +122,45 @@ for (const placed of [true, false]) {
     expect(JSON.stringify(await call)).toMatch(/Cancel/)
   })
 }
+
+// Payment tools: a call under the daily allowance runs with no pane; one with no amount is held.
+const mockSpendHost = (on: any, opened: { n: number }) => {
+  on('session.cwd', () => ({ value: '/work/app' }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('process.run', async (_: any, e: any) => {
+    if (e.argv?.[0] === 'sleep') await new Promise((r) => setTimeout(r, 20))
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('clock.now', () => ({ value: Date.now() }))
+  on('ui.invalidate', () => ({ value: undefined }))
+  on('ui.open', () => { opened.n += 1; return { value: { isPlaced: true } } })
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', ($: any, e: any) => { const { Text } = $.ui.resolve(e); return <Text>engine</Text> })
+  on('tool.call', () => ({ result: { paid: true } }))
+}
+
+test('a payment under the daily allowance runs without a pane', { options: { dailyAllowance: 20, amountUnits: 'minor' } }, async ($, on) => {
+  const opened = { n: 0 }
+  mockSpendHost(on, opened)
+  const out = await $.tool.call({ tool: 'mcp__stripe__create_charge', amount: 500, currency: 'usd', customer: 'cus_1' })
+  expect(JSON.stringify(out)).toMatch(/paid/)
+  expect(opened.n).toBe(0)
+})
+
+test('a payment with no amount is held and Cancel refuses it', { options: { dailyAllowance: 20 } }, async ($, on) => {
+  const opened = { n: 0 }
+  mockSpendHost(on, opened)
+  const call = $.tool.call({ tool: 'mcp__stripe__create_charge', currency: 'usd', customer: 'cus_1' })
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (let i = 0; i < 40 && !(await ui.find({ key: 'cancel' })); i++) {
+    await ui.unmount()
+    await new Promise((r) => setTimeout(r, 100))
+    ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  }
+  await ui.press({ key: 'cancel' })
+  await ui.unmount()
+  expect(opened.n).toBe(1)
+  expect(JSON.stringify(await call)).toMatch(/held this payment and did not run it: the user pressed Cancel/)
+})
