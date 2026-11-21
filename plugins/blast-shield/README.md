@@ -54,12 +54,12 @@ Payments get the same hold. See [Payments](#payments).
 
 ## Payments
 
-An MCP tool whose name looks like a payment is held for **Proceed** or **Cancel**, the same way as a risky command. So is a `stripe` CLI command that creates, pays, confirms, captures, finalizes or posts a charge, payment, transfer, refund, invoice, checkout or payout.
+An MCP tool whose name looks like a payment is held for **Proceed** or **Cancel**, the same way as a risky command. So is a `stripe` CLI command that creates, pays, confirms, captures, finalizes, sends or posts a charge, payment, transfer, refund, invoice, checkout or payout.
 
 - **What counts.** A word in the tool's name, after `mcp__<server>__`, matches one of `charge`, `payment`, `pay`, `transfer`, `refund`, `invoice`, `checkout`, `payout`, or its plural. `mcp__stripe__create_charge` and `mcp__bank__send_transfer` are held. A name that starts with a read verb (`list`, `get`, `retrieve`, `search` and similar) is not, so `list_invoices` runs as normal. The list is the **Spend: tool name patterns** option.
 - **Default.** Every payment is held.
 - **Daily allowance (off by default).** Set **Spend: daily allowance** (for example `20`, meaning 20.00 in **Spend: allowance currency**). A payment that fits in what is left today runs without a pane and is still logged. Anything else is held: over the allowance, another currency or none, no amount found, a payee outside the allowlist, or a receipts file that can't be read. Stripe CLI commands are always held, because amounts aren't read from shell commands.
-- **Reserve, then commit or release.** A payment the allowance lets through is written to the receipts as `allowed` before it runs, so a payment in flight already counts against the day. When the tool answers, a `commit` line follows. If the call never ran (another hook or a permission rule denied it), a `release` line returns the amount. A tool error is committed, because the payment may have gone through. A payment you approve with Proceed is reserved the same way, as `approved`, and counts toward the day too. Checks and reservations run one at a time, so payments made at once can't both fit in the same room.
+- **Reserve, then commit or release.** A payment the allowance lets through is written to the receipts as `allowed` before it runs, so a payment in flight already counts against the day. When the tool answers, a `commit` line follows. If another mod's hook denied the call, a `release` line returns the amount. A tool error is committed, because the payment may have gone through. A payment you approve with Proceed is reserved the same way, as `approved`, and counts toward the day too. Checks and reservations run one at a time, so payments made at once can't both fit in the same room.
 - **Amounts.** Read from `amount`, `amount_cents`, `amount_in_cents`, `cents` or `amount_minor`, at the top level of the input or one level down, with `currency` beside it. Fields named for cents are minor units. A bare `amount` is read in major units unless **Spend: how to read a bare amount field** is `minor`. Stripe's API sends cents, so set it to `minor` for Stripe tools. The default over-counts a cents-based tool rather than under-counting a dollar-based one. A zero, negative, non-numeric, or over-precise amount counts as no amount.
 - **Payees.** Read from `payee`, `recipient`, `destination`, `to`, `customer`, `merchant`, `vendor` or `account`. **Spend: payee allowlist** (comma-separated) limits who the allowance may pay. A payee outside it is held. The first payment to a payee in a project is flagged: in the pane when held, and in a toast when the allowance lets it through. It is a warning, not a hold.
 
@@ -114,7 +114,11 @@ When a dry run fails (no cluster, no credentials, not a repo), the pane says so 
 - Amounts in currencies without cents (yen, for example) are read as if they had two decimals, so set the allowance in the same units the tool sends.
 - The allowance sums one project's receipts. Two sessions in the same project share the file, but their checks only queue within one session, so two sessions paying at the same moment can both fit in the same room.
 - The receipts file and the plugin options are files the agent could edit unless your permission rules stop it. Deny edits to `~/.claude/blast-shield/` if that matters to you.
-- The receipts file is read in full for every payment. It is never rotated.
+- The receipts file is read in full for every payment, and never rotated. Past 4 MiB the read is cut off, and every payment is held until you move the file.
+- A call you decline at the permission prompt, or a permission rule denies, reaches Blast Shield as a tool error, so its reservation stays counted. Only a deny from another mod's hook releases it.
+- **Spend: how to read a bare amount field** is one setting for every tool. With `minor`, a tool that sends dollars is under-counted a hundredfold. Quantities, line items and fees are not added in: only the one amount field is read.
+- "Today" is the calendar day of the clock the mod runs on, which may be UTC rather than your local day.
+- Writing receipts to `~/.claude/blast-shield/` has only been tested with a temporary `HOME`, not in a live session. If the host refuses that write, every payment is refused, even after Proceed, and Claude is told the receipt couldn't be written.
 
 ## Run it
 

@@ -213,6 +213,7 @@ configureSpend({});
 check("stripe CLI charge is held as spend", classify("stripe charges create --amount 2000 --currency usd")?.kind === "spend");
 check("stripe CLI behind sudo and env is held", classify("sudo env STRIPE_X=1 stripe payouts create --amount 5")?.kind === "spend");
 check("stripe CLI label never carries flag values", classify("stripe --api-key sk_test_123 refunds create --charge ch_1")?.label === "stripe refunds create");
+check("stripe CLI compound verbs are held", classify("stripe invoices finalize_invoice in_1")?.label === "stripe invoices finalize_invoice" && classify("stripe invoices send_invoice in_1")?.kind === "spend" && classify("stripe invoices pay in_1")?.kind === "spend");
 check("stripe CLI reads are not held", classify("stripe charges list") === null && classify("stripe customers create") === null && classify("stripe listen") === null);
 
 // amounts
@@ -287,7 +288,7 @@ check("a tool error is committed, not released", rec.at(-1).decision === "commit
 answer = "cancel";
 out = await mcpHook(S("hook"), { tool: "mcp__stripe__create_charge", tool_use_id: "t5", amount: 6, currency: "usd", customer: "cus_1" }, nextOk);
 rec = receiptsOf("hook");
-check("over the allowance: held, Cancel denies", ui.opened === 1 && /did not run it: the user pressed Cancel/.test(out.deny ?? ""), out);
+check("over the allowance: held, Cancel denies", ui.opened === 1 && /did not run it: the user pressed Cancel\. It would have: pay 6\.00 USD to cus_1\./.test(out.deny ?? ""), out);
 check("a cancel leaves a cancel receipt with no id", rec.at(-1).decision === "cancel" && rec.at(-1).id === undefined, rec.at(-1));
 answer = "proceed";
 out = await mcpHook(S("hook"), { tool: "mcp__stripe__create_charge", tool_use_id: "t6", amount: 6, currency: "usd", customer: "cus_1" }, nextOk);

@@ -44,7 +44,7 @@ export function register(on, options = {}) {
     let summary = risk.label;
     const decision = await holdForAnswer($, next, mine, async () => {
       if (risk.kind === "spend") {
-        mine.report = { summary: risk.label, lines: [], note: "Blast Shield doesn't read amounts from shell commands, so Stripe CLI payments are always held, with or without a daily allowance. It does not reverse payments." };
+        mine.report = { summary: `run ${risk.label}`, lines: [], note: "Blast Shield doesn't read amounts from shell commands, so Stripe CLI payments are always held, with or without a daily allowance. It does not reverse payments." };
         return;
       }
       // Measure where the command will run: the session folder, moved by any
@@ -199,7 +199,7 @@ function scoreboard($, decision, summary, isSpend) {
 const DEFAULT_SPEND_PATTERNS = "charge,payment,pay,transfer,refund,invoice,checkout,payout";
 // A first word that only reads, so `list_invoices` or `get_payment` is not a payment.
 const READ_VERBS = new Set(["list", "get", "retrieve", "search", "read", "fetch", "find", "describe", "count", "show", "view", "lookup"]);
-const STRIPE_WRITE_VERBS = new Set(["create", "pay", "confirm", "capture", "finalize", "post"]);
+const STRIPE_WRITE_VERBS = new Set(["create", "pay", "confirm", "capture", "finalize", "send", "post"]);
 const MINOR_KEYS = ["amount_cents", "amount_in_cents", "cents", "amount_minor"];
 const PAYEE_KEYS = ["payee", "recipient", "destination", "to", "customer", "merchant", "vendor", "account"];
 
@@ -254,13 +254,15 @@ export function spendPatternOf(tool) {
  */
 function classifyStripe(args, dir) {
   const plain = args.filter((a) => !a.startsWith("-"));
-  const verb = plain.find((w) => STRIPE_WRITE_VERBS.has(w.toLowerCase()));
+  // Verbs can be compound: `stripe invoices finalize_invoice`, `send_invoice`.
+  const verb = plain.find((w) => nameWords(w).some((word) => STRIPE_WRITE_VERBS.has(word)));
   const resource = plain.find((w) => w !== verb && nameWords(w).some((word) => wordPattern(word)));
   if (!verb || !resource) {
     return null;
   }
-  const shown = /^[\w/.-]{1,40}$/.test(resource) ? resource : "payment";
-  return { kind: "spend", label: verb === "post" ? `stripe post ${shown}` : `stripe ${shown} ${verb}` , dir };
+  const safe = (w, fallback) => (/^[\w/.-]{1,40}$/.test(w) ? w : fallback);
+  const shown = safe(resource, "payment");
+  return { kind: "spend", label: verb === "post" ? `stripe post ${shown}` : `stripe ${shown} ${safe(verb, "create")}`, dir };
 }
 
 /** A positive whole number of minor units (cents), or null when the value can't be trusted. */
@@ -397,7 +399,8 @@ async function spendContext($) {
 async function readReceipts($, ctx) {
   try {
     const run = await $.process.run(["sh", "-c", READ_RECEIPTS, "blast-shield", ctx.project], { timeoutMs: 5000 });
-    return run.exitCode === 0 ? parseReceipts(run.stdout) : null;
+    // A cut-off read could drop today's lines and under-count, so it holds like a failed one.
+    return run.exitCode === 0 && !run.isStdoutTruncated ? parseReceipts(run.stdout) : null;
   } catch {
     return null;
   }
@@ -463,7 +466,7 @@ async function settleHeldSpend($, e, next, decision, call, summary) {
     } catch {
       // refusing doesn't depend on the receipt
     }
-    return { deny: `Blast Shield held this payment and did not run it: ${why}. It would have made: ${summary}. Do not retry it unless the user asks you to.` };
+    return { deny: `Blast Shield held this payment and did not run it: ${why}. It would have: ${summary}. Do not retry it unless the user asks you to.` };
   }
   const id = `${(await $.clock.now()).toString(36)}-${(reservations += 1).toString(36)}-${ctx.session.slice(0, 8)}`;
   try {
@@ -487,7 +490,7 @@ async function spendCall($, e, next, pattern) {
   const call = { tool, ...readSpend(e) };
   const ctx = await spendContext($);
   const check = await reserveSpend($, ctx, call);
-  const what = `${money(call.amount, call.currency)} to ${call.payee ?? "a payee I couldn't read"}`;
+  const what = `pay ${money(call.amount, call.currency)} to ${call.payee ?? "a payee I couldn't read"}`;
 
   if (check.id) {
     try {
