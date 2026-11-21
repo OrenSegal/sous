@@ -59,8 +59,8 @@ An MCP tool whose name looks like a payment is held for **Proceed** or **Cancel*
 - **What counts.** A word in the tool's name, after `mcp__<server>__`, matches one of `charge`, `payment`, `pay`, `transfer`, `refund`, `invoice`, `checkout`, `payout`, or its plural. `mcp__stripe__create_charge` and `mcp__bank__send_transfer` are held. A name that starts with a read verb (`list`, `get`, `retrieve`, `search` and similar) is not, so `list_invoices` runs as normal. The list is the **Spend: tool name patterns** option.
 - **Default.** Every payment is held.
 - **Daily allowance (off by default).** Set **Spend: daily allowance** (for example `20`, meaning 20.00 in **Spend: allowance currency**). A payment that fits in what is left today runs without a pane and is still logged. Anything else is held: over the allowance, another currency or none, no amount found, a payee outside the allowlist, or a receipts file that can't be read. Stripe CLI commands are always held, because amounts aren't read from shell commands.
-- **Reserve, then commit or release.** A payment the allowance lets through is written to the receipts as `allowed` before it runs, so a payment in flight already counts against the day. When the tool answers, a `commit` line follows. If another mod's hook denied the call, a `release` line returns the amount. A tool error is committed, because the payment may have gone through. A payment you approve with Proceed is reserved the same way, as `approved`, and counts toward the day too. Checks and reservations run one at a time, so payments made at once can't both fit in the same room.
-- **Amounts.** Read from `amount`, `amount_cents`, `amount_in_cents`, `cents` or `amount_minor`, at the top level of the input or one level down, with `currency` beside it. Fields named for cents are minor units. A bare `amount` is read in major units unless **Spend: how to read a bare amount field** is `minor`. Stripe's API sends cents, so set it to `minor` for Stripe tools. The default over-counts a cents-based tool rather than under-counting a dollar-based one. A zero, negative, non-numeric, or over-precise amount counts as no amount.
+- **Reserve, then commit or release.** A payment the allowance lets through is written to the receipts as `allowed` before it runs, so a payment in flight already counts against the day. When the tool answers, a `commit` line follows. A `release` line returns the amount when the call never ran: another mod's hook denied it, or it was refused before the tool ran (a permission rule, the permission prompt, a headless session that can't ask). Blast Shield tells these apart by whether the host reported the tool as run. A tool error is committed, because the payment may have gone through. A payment you approve with Proceed is reserved the same way, as `approved`, and counts toward the day too. Checks and reservations run one at a time, within a session and across sessions in the same project (through a lock folder next to the receipts), so payments made at once can't both fit in the same room.
+- **Amounts.** Read from `amount`, `amount_cents`, `amount_in_cents`, `cents` or `amount_minor`, at the top level of the input or one level down, with `currency` beside it. Fields named for cents are minor units. A bare `amount` is read in major units, unless the tool's server is listed in **Spend: servers that send cents** (for Stripe's API, which sends cents, add `stripe`). Reading major units by default over-counts a cents-based server rather than under-counting a dollar-based one. A zero, negative, non-numeric, or over-precise amount counts as no amount.
 - **Payees.** Read from `payee`, `recipient`, `destination`, `to`, `customer`, `merchant`, `vendor` or `account`. **Spend: payee allowlist** (comma-separated) limits who the allowance may pay. A payee outside it is held. The first payment to a payee in a project is flagged: in the pane when held, and in a toast when the allowance lets it through. It is a warning, not a hold.
 
 Set the options with `/config`, or under `pluginConfigs` in `~/.claude/settings.json`.
@@ -76,12 +76,12 @@ Read it with `jq`:
 ```bash
 # every line, newest last
 jq -c . ~/.claude/blast-shield/spend/*.jsonl
-# today's reserved total per currency, in major units (reserved minus released, as the allowance counts it)
-jq -rs --arg d "$(date +%F)" '
+# today's reserved total per currency (UTC day), in major units (reserved minus released, as the allowance counts it)
+jq -rs --arg d "$(date -u +%F)" '
   (map(select(.decision == "release") | .id)) as $rel
   | map(select((.decision == "allowed" or .decision == "approved")
       and (.id as $i | $rel | index([$i]) | not)
-      and (.ts | sub("\\.[0-9]+Z$"; "Z") | fromdate | strflocaltime("%F")) == $d))
+      and (.ts | sub("\\.[0-9]+Z$"; "Z") | fromdate | strftime("%F")) == $d))
   | group_by(.currency) | .[] | "\(.[0].currency) \(map(.amount) | add / 100)"
 ' ~/.claude/blast-shield/spend/*.jsonl
 ```
@@ -112,13 +112,12 @@ When a dry run fails (no cluster, no credentials, not a repo), the pane says so 
 - Blast Shield does not reverse payments. Proceed sends the call as written.
 - It does not detect fraud. The payee allowlist and the first-payee flag compare names, nothing more.
 - Amounts in currencies without cents (yen, for example) are read as if they had two decimals, so set the allowance in the same units the tool sends.
-- The allowance sums one project's receipts. Two sessions in the same project share the file, but their checks only queue within one session, so two sessions paying at the same moment can both fit in the same room.
-- The receipts file and the plugin options are files the agent could edit unless your permission rules stop it. Deny edits to `~/.claude/blast-shield/` if that matters to you.
+- Blast Shield refuses Write and Edit calls into `~/.claude/blast-shield/`, and Bash commands that name that folder alongside a write (`>`, `rm`, `mv`, `sed -i`, a script interpreter and similar). That reads command text, so a path built from variables gets past it. Add a permission deny rule for a hard block. The plugin options live in your settings file, which Blast Shield does not guard.
 - The receipts file is read in full for every payment, and never rotated. Past 4 MiB the read is cut off, and every payment is held until you move the file.
-- A call you decline at the permission prompt, or a permission rule denies, reaches Blast Shield as a tool error, so its reservation stays counted. Only a deny from another mod's hook releases it.
-- **Spend: how to read a bare amount field** is one setting for every tool. With `minor`, a tool that sends dollars is under-counted a hundredfold. Quantities, line items and fees are not added in: only the one amount field is read.
-- "Today" is the calendar day of the clock the mod runs on, which may be UTC rather than your local day.
-- Writing receipts to `~/.claude/blast-shield/` has only been tested with a temporary `HOME`, not in a live session. If the host refuses that write, every payment is refused, even after Proceed, and Claude is told the receipt couldn't be written.
+- Telling "refused before running" from "ran and failed" relies on the host's PostToolUse and PostToolUseFailure events reaching the mod before the call returns. That held on Claude Code 2.1.328 in the live check below. If a host stops raising them, refusals would be committed (counted), which errs on the safe side.
+- A server listed in **Spend: servers that send cents** is trusted for every tool it has. Quantities, line items and fees are not added in: only the one amount field is read.
+- "Today" is the UTC calendar day, the same wherever the host runs. In the Americas it rolls over in the late afternoon or evening.
+- A payment that needs a person waits up to 10 minutes for Proceed or Cancel. In a headless session (`claude -p`, an SDK host) nobody can answer, so it waits the full 10 minutes and is refused. Set an allowance and a payee allowlist for unattended runs.
 
 ## Run it
 
@@ -148,7 +147,9 @@ claude plugin test .     # classifier tests, and the pane on every surface
 node test/verify.mjs     # measures against a real temp git repo, with real processes
 ```
 
-The payment tests (matcher, amounts, allowance math, ten reservations at once against one allowance, first payee, receipts) are in `test/verify.mjs`. Two in `hooks/classify.test.tsx` check that a payment under the allowance opens no pane and one with no amount is held.
+The payment tests (matcher, amounts, allowance math, ten reservations at once in one session and four sessions at once, first payee, receipts, the receipts guard) are in `test/verify.mjs`. Two in `hooks/classify.test.tsx` check that a payment under the allowance opens no pane and one with no amount is held.
+
+Live check (2026-11-20, Claude Code 2.1.328, `claude -p` with a stand-in MCP server that moves no money): a payment under the allowance ran and left `allowed` then `commit`; one the server answered with an error left `commit`; one refused in `dontAsk` mode left `release`; a payment over what was left was held; and a Bash `>>` into the receipts folder was refused. The pane's buttons were not pressed in that check: headless sessions can't.
 
 CI runs `node test/verify.mjs` on Ubuntu and macOS. The classifier tests need the `claude` CLI, so they run locally only.
 

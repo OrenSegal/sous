@@ -36,6 +36,9 @@ export function register(on, options = {}) {
   configureSpend(options);
 
   on("tool.call", { tool: "Bash" }, async ($, e, next) => {
+    if (writesReceipts(String(e.command ?? ""))) {
+      return { deny: RECEIPTS_DENY };
+    }
     const risk = classify(String(e.command ?? ""));
     if (risk === null) {
       return next(e);
@@ -75,6 +78,9 @@ export function register(on, options = {}) {
 
   // MCP tools whose names look like payments. Every other tool passes straight through.
   on("tool.call", async ($, e, next) => {
+    if (FILE_TOOLS.has(e.tool) && touchesReceipts(String(e.file_path ?? e.notebook_path ?? ""))) {
+      return { deny: RECEIPTS_DENY };
+    }
     const pattern = spendPatternOf(String(e.tool ?? ""));
     if (pattern === null) {
       return next(e);
@@ -83,6 +89,20 @@ export function register(on, options = {}) {
   }).catch(($, e, next) => next.called
     ? next(e)
     : { deny: "Blast Shield held this payment and did not run it: it hit an error while checking it. Do not retry it unless the user asks you to." });
+
+  // Only the tool_use_id is kept, and only until the call settles.
+  on("classic.PostToolUse", ($, e, next) => {
+    if (spendPatternOf(String(e.tool_name ?? "")) !== null) {
+      ranCalls.add(e.tool_use_id);
+    }
+    return next(e);
+  });
+  on("classic.PostToolUseFailure", ($, e, next) => {
+    if (spendPatternOf(String(e.tool_name ?? "")) !== null) {
+      ranCalls.add(e.tool_use_id);
+    }
+    return next(e);
+  });
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {
     if (e.requestId !== PANE_ID || held === null || held.report === null) {
@@ -196,6 +216,14 @@ function scoreboard($, decision, summary, isSpend) {
 // back out if the call never ran (it was denied). A tool error is committed,
 // not released: the payment may have gone through.
 
+// The receipts are the allowance's ledger, so the agent may read them but not change them.
+const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+const RECEIPTS_DENY = "Blast Shield refused this: it would change the spend receipts in ~/.claude/blast-shield/, which the daily allowance is counted from. Reading them is fine. Do not retry it unless the user asks you to.";
+export const touchesReceipts = (path) => /(^|\/)\.claude\/blast-shield(\/|$)/.test(path);
+// shortcut: reads the command text, so a path built from variables gets past it; a permission deny rule is the hard block.
+const WRITE_WORDS = />|\b(rm|mv|cp|tee|truncate|dd|ln|unlink|shred|chmod|chown|touch|rmdir|perl|ruby|node|python[\d.]*|vi|vim|nano|ed)\b|\bsed\b[^|;&]*\s-i/;
+export const writesReceipts = (command) => /\.claude\/blast-shield\b/.test(command) && WRITE_WORDS.test(command);
+
 const DEFAULT_SPEND_PATTERNS = "charge,payment,pay,transfer,refund,invoice,checkout,payout";
 // A first word that only reads, so `list_invoices` or `get_payment` is not a payment.
 const READ_VERBS = new Set(["list", "get", "retrieve", "search", "read", "fetch", "find", "describe", "count", "show", "view", "lookup"]);
@@ -203,7 +231,7 @@ const STRIPE_WRITE_VERBS = new Set(["create", "pay", "confirm", "capture", "fina
 const MINOR_KEYS = ["amount_cents", "amount_in_cents", "cents", "amount_minor"];
 const PAYEE_KEYS = ["payee", "recipient", "destination", "to", "customer", "merchant", "vendor", "account"];
 
-const spend = { patterns: [], allowance: 0, currency: "usd", units: "major", payees: [] };
+const spend = { patterns: [], allowance: 0, currency: "usd", minorServers: [], payees: [] };
 
 const commaList = (text) => String(text ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 
@@ -213,7 +241,7 @@ export function configureSpend(options = {}) {
   const daily = Number(options.dailyAllowance ?? 0);
   spend.allowance = Number.isFinite(daily) && daily > 0 ? Math.round(daily * 100) : 0;
   spend.currency = String(options.allowanceCurrency ?? "usd").trim().toLowerCase();
-  spend.units = options.amountUnits === "minor" ? "minor" : "major";
+  spend.minorServers = commaList(options.minorUnitServers);
   spend.payees = commaList(options.payeeAllowlist);
   return spend;
 }
@@ -280,10 +308,12 @@ function toMinor(value, isMinor) {
 
 /**
  * { amount, currency, payee } from a tool's input. amount is in minor units, or null.
- * A key named for cents is always minor units. A bare `amount` is read in the configured
- * units (major by default, which over-counts a cents-based API rather than under-counting).
+ * A key named for cents is always minor units. A bare `amount` is minor units only for a
+ * server listed in minorUnitServers; otherwise major, which over-counts a cents-based API
+ * rather than under-counting a dollar-based one.
  */
-export function readSpend(input) {
+export function readSpend(input, tool = String(input?.tool ?? "")) {
+  const bareIsMinor = spend.minorServers.includes((tool.split("__")[1] ?? "").toLowerCase());
   const scopes = [input, ...Object.values(input ?? {}).filter((v) => v && typeof v === "object" && !Array.isArray(v))];
   let amount = null;
   let currency = null;
@@ -294,7 +324,7 @@ export function readSpend(input) {
       if (minorKey) {
         amount = toMinor(scope[minorKey], true);
       } else if (scope.amount !== undefined) {
-        amount = toMinor(scope.amount, spend.units === "minor");
+        amount = toMinor(scope.amount, bareIsMinor);
       }
     }
     if (currency === null && typeof scope.currency === "string" && scope.currency.trim()) {
@@ -314,10 +344,9 @@ export function money(minor, currency) {
   return minor === null ? "an amount I couldn't read" : `${(minor / 100).toFixed(2)} ${(currency ?? "").toUpperCase()}`.trim();
 }
 
-/** The local calendar day of a time in ms, as YYYY-MM-DD. */
+/** The UTC calendar day of a time in ms, as YYYY-MM-DD. UTC, so it doesn't depend on the host's time zone. */
 function dayOf(ms) {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 /** Parses JSONL receipts, skipping lines that don't parse (a partial write, a hand edit). */
@@ -380,6 +409,18 @@ export function checkSpend(call, receipts, day) {
 // The receipts live outside the project, so they never land in git. One file per project folder.
 const RECEIPTS = `f="$HOME/.claude/blast-shield/spend/$1.jsonl"`;
 const READ_RECEIPTS = `${RECEIPTS}; [ -f "$f" ] || exit 0; cat -- "$f"`;
+// A lock folder shared by every session in the project: mkdir either creates it or fails, atomically.
+// A lock older than a minute is from a session that died holding it, and is broken. Waits up to 10 s.
+const LOCK_RECEIPTS = `${RECEIPTS}; mkdir -p "$(dirname "$f")" || exit 1; i=0
+while ! mkdir "$f.lock" 2>/dev/null; do
+  i=$((i+1))
+  if [ "$i" -ge 100 ]; then
+    [ -n "$(find "$f.lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$f.lock" 2>/dev/null && i=0 && continue
+    exit 1
+  fi
+  sleep 0.1
+done`;
+const UNLOCK_RECEIPTS = `${RECEIPTS}; rmdir "$f.lock" 2>/dev/null; exit 0`;
 // >> opens the file in append mode, so lines from two sessions don't overwrite each other.
 const APPEND_RECEIPT = `${RECEIPTS}; mkdir -p "$(dirname "$f")" && printf '%s\\n' "$2" >> "$f"`;
 
@@ -415,7 +456,8 @@ async function writeReceipt($, ctx, row) {
   }
 }
 
-// Read, check and reserve run one at a time, so two payments can't both fit under the same room.
+// Read, check and reserve run one at a time, so two payments can't both fit under the same room:
+// in this session through the queue, across sessions through the lock folder.
 let spendQueue = Promise.resolve();
 function oneAtATime(work) {
   const run = spendQueue.then(work);
@@ -432,23 +474,41 @@ let reservations = 0;
 export function reserveSpend($, ctx, call) {
   return oneAtATime(async () => {
     const now = await $.clock.now();
-    const receipts = await readReceipts($, ctx);
-    const check = checkSpend(call, receipts, dayOf(now));
-    if (check.reasons.length > 0) {
-      return check;
+    const locked = await $.process.run(["sh", "-c", LOCK_RECEIPTS, "blast-shield", ctx.project], { timeoutMs: 15000 }).then((r) => r.exitCode === 0, () => false);
+    try {
+      const receipts = locked ? await readReceipts($, ctx) : null;
+      const check = checkSpend(call, receipts, dayOf(now));
+      if (!locked) {
+        check.reasons = check.reasons.filter((r) => !/receipts file/.test(r)).concat("another session held the receipts lock for over 10 seconds");
+      }
+      if (check.reasons.length > 0) {
+        return check;
+      }
+      const id = `${now.toString(36)}-${(reservations += 1).toString(36)}-${ctx.session.slice(0, 8)}`;
+      await writeReceipt($, ctx, { id, tool: call.tool, amount: call.amount, currency: call.currency, payee: call.payee, decision: "allowed", reason: "under the daily allowance" });
+      return { ...check, id };
+    } finally {
+      if (locked) {
+        await $.process.run(["sh", "-c", UNLOCK_RECEIPTS, "blast-shield", ctx.project], { timeoutMs: 5000 }).catch(() => {});
+      }
     }
-    const id = `${now.toString(36)}-${(reservations += 1).toString(36)}-${ctx.session.slice(0, 8)}`;
-    await writeReceipt($, ctx, { id, tool: call.tool, amount: call.amount, currency: call.currency, payee: call.payee, decision: "allowed", reason: "under the daily allowance" });
-    return { ...check, id };
   });
 }
 
+// tool_use_ids of calls the tool actually ran, from the host's PostToolUse and PostToolUseFailure
+// events. A call that errors without one was refused before it ran (a permission rule, the prompt).
+const ranCalls = new Set();
+
 /** Commits or releases a reservation once the tool has answered. */
-async function settleSpend($, ctx, id, call, result) {
-  const released = result?.deny !== undefined;
-  const reason = released ? "the call was denied, so nothing was paid"
-    : result?.isError ? "the tool reported an error; counted, because the payment may have gone through"
-      : "the tool answered";
+async function settleSpend($, ctx, id, call, result, toolUseId) {
+  // Only MCP calls are tracked; a shell command that errors is counted as before.
+  const neverRan = result?.isError && call.tool.startsWith("mcp__") && toolUseId !== undefined && !ranCalls.has(toolUseId);
+  ranCalls.delete(toolUseId);
+  const released = result?.deny !== undefined || neverRan;
+  const reason = result?.deny !== undefined ? "the call was denied, so nothing was paid"
+    : neverRan ? "refused before the tool ran, so nothing was paid"
+      : result?.isError ? "the tool reported an error; counted, because the payment may have gone through"
+        : "the tool answered";
   try {
     await oneAtATime(() => writeReceipt($, ctx, { id, tool: call.tool, amount: call.amount, currency: call.currency, payee: call.payee, decision: released ? "release" : "commit", reason }));
   } catch {
@@ -480,14 +540,14 @@ async function settleHeldSpend($, e, next, decision, call, summary) {
     result = await next(e);
     return result;
   } finally {
-    await settleSpend($, ctx, id, call, result ?? { isError: true });
+    await settleSpend($, ctx, id, call, result ?? { isError: true }, e.tool_use_id);
   }
 }
 
 /** An MCP tool call that matched a spend pattern. */
 async function spendCall($, e, next, pattern) {
   const tool = String(e.tool);
-  const call = { tool, ...readSpend(e) };
+  const call = { tool, ...readSpend(e, tool) };
   const ctx = await spendContext($);
   const check = await reserveSpend($, ctx, call);
   const what = `pay ${money(call.amount, call.currency)} to ${call.payee ?? "a payee I couldn't read"}`;
@@ -503,7 +563,7 @@ async function spendCall($, e, next, pattern) {
       result = await next(e);
       return result;
     } finally {
-      await settleSpend($, ctx, check.id, call, result ?? { isError: true });
+      await settleSpend($, ctx, check.id, call, result ?? { isError: true }, e.tool_use_id);
     }
   }
 

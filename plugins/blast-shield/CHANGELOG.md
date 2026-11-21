@@ -6,6 +6,11 @@
 - Optional daily allowance, off by default. A payment with a readable amount, in the allowance's currency, that fits in what is left today runs without a pane. It is reserved in the receipts before it runs and committed or released after. Everything else is held.
 - Optional payee allowlist, and a flag on the first payment to a payee in a project.
 - Receipts: one JSON line per decision in `~/.claude/blast-shield/spend/<project>.jsonl`.
+- Reservations are serialized across sessions in a project through a lock folder, not only within one session.
+- A payment refused before the tool ran (a permission rule, the prompt) is released; a tool that ran and errored is committed. Told apart by the host's PostToolUse and PostToolUseFailure events.
+- A bare `amount` is read as cents only for servers listed in "Spend: servers that send cents"; everything else is major units.
+- The allowance day is the UTC day.
+- Write and Edit calls, and Bash commands that write, into `~/.claude/blast-shield/` are refused.
 - The hold loop is shared between commands and payments, so a payment waits its turn behind a held command.
 
 

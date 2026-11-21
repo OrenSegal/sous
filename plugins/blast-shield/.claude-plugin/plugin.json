@@ -36,16 +36,12 @@
       "required": false,
       "default": "usd"
     },
-    "amountUnits": {
+    "minorUnitServers": {
       "type": "string",
-      "title": "Spend: how to read a bare amount field",
-      "description": "major: amount 20 means 20.00 (the default, which over-counts a cents-based API). minor: amount 2000 means 20.00, as Stripe's API sends it. Fields named for cents are always read as minor units.",
+      "title": "Spend: servers that send cents",
+      "description": "MCP servers whose bare amount field is in minor units (2000 means 20.00), separated by commas, named as their tools name them: stripe for mcp__stripe__create_refund. Every other server's bare amount is read as major units, which over-counts a cents-based server rather than under-counting. Fields named for cents are always minor units.",
       "required": false,
-      "default": "major",
-      "options": [
-        "major",
-        "minor"
-      ]
+      "default": ""
     },
     "payeeAllowlist": {
       "type": "string",

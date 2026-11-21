@@ -141,7 +141,7 @@ const mockSpendHost = (on: any, opened: { n: number }) => {
   on('tool.call', () => ({ result: { paid: true } }))
 }
 
-test('a payment under the daily allowance runs without a pane', { options: { dailyAllowance: 20, amountUnits: 'minor' } }, async ($, on) => {
+test('a payment under the daily allowance runs without a pane', { options: { dailyAllowance: 20, minorUnitServers: 'stripe' } }, async ($, on) => {
   const opened = { n: 0 }
   mockSpendHost(on, opened)
   const out = await $.tool.call({ tool: 'mcp__stripe__create_charge', amount: 500, currency: 'usd', customer: 'cus_1' })

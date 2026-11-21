@@ -192,7 +192,11 @@ const mcpHook = hooks.find((h) => h.ev === "tool.call" && h.matcher === null).fn
 paneHook = hooks.find((h) => h.ev === "ui.render" && h.matcher?.component === "Pane").fn;
 const nextOk = Object.assign(async (e) => ({ result: { ok: true }, text: "ok" }), { signal: { aborted: false } });
 const nextDeny = Object.assign(async (e) => ({ deny: "permission denied" }), { signal: { aborted: false } });
-const nextErr = Object.assign(async (e) => ({ isError: true, result: "boom", text: "boom" }), { signal: { aborted: false } });
+const postFailure = () => hooks.find((h) => h.ev === "classic.PostToolUseFailure").fn;
+// The tool ran and failed: the host raises PostToolUseFailure before the call resolves.
+const nextErr = Object.assign(async (e) => { await postFailure()({}, { tool_name: e.tool, tool_use_id: e.tool_use_id }, (x) => x); return { isError: true, result: "boom", text: "boom" }; }, { signal: { aborted: false } });
+// Refused before it ran (a permission rule or the prompt): an error with no PostToolUse event.
+const nextRefused = Object.assign(async (e) => ({ isError: true, result: "Permission denied", text: "Permission denied" }), { signal: { aborted: false } });
 const receiptsOf = (project) => {
   try { return parseReceipts(execFileSync("cat", [join(spendHome, ".claude/blast-shield/spend", `-work-${project}.jsonl`)], { encoding: "utf8" })); } catch { return []; }
 };
@@ -224,8 +228,9 @@ check("cents keys are minor units", readSpend({ amount_cents: 1999 }).amount ===
 check("nested amount is found", readSpend({ transfer: { amount: "12.50", currency: "eur", recipient: "a@b.c" } }).amount === 1250);
 for (const bad of [0, -5, "abc", NaN, Infinity, "1e3", 1.234, null]) check(`untrusted amount ${String(bad)} is null`, readSpend({ amount: bad }).amount === null);
 check("fractional cents are null", readSpend({ cents: 10.5 }).amount === null);
-configureSpend({ amountUnits: "minor" });
-check("minor units: bare amount 2000 is 20.00", readSpend({ amount: 2000 }).amount === 2000 && readSpend({ amount: 20.5 }).amount === null);
+configureSpend({ minorUnitServers: "stripe, Square" });
+check("listed server: bare amount 2000 is 20.00", readSpend({ amount: 2000 }, "mcp__stripe__create_refund").amount === 2000 && readSpend({ amount: 20.5 }, "mcp__square__pay").amount === null);
+check("unlisted server: bare amount stays major", readSpend({ amount: 20 }, "mcp__paypal__create_payout").amount === 2000);
 
 // allowance math
 configureSpend({ dailyAllowance: 20, allowanceCurrency: "usd" });
@@ -264,6 +269,7 @@ configureSpend({ dailyAllowance: 20 });
 const ctx = { project: "-work-race", session: "sess-1" };
 const results = await Promise.all(Array.from({ length: 10 }, () => reserveSpend(S("race"), ctx, { tool: "mcp__x__pay", amount: 600, currency: "usd", payee: "acct_1" })));
 const passed = results.filter((x) => x.id).length;
+check("the lock folder is gone after the race", !existsSync(join(spendHome, ".claude/blast-shield/spend/-work-race.jsonl.lock")));
 check("concurrent reservations never pass the cap", passed === 3, results.map((x) => x.id ?? x.reasons[0]));
 check("each reservation left one allowed receipt", receiptsOf("race").filter((x) => x.decision === "allowed").length === 3, receiptsOf("race"));
 
@@ -284,6 +290,9 @@ check("a denied call releases its reservation", rec.at(-1).decision === "release
 out = await mcpHook(S("hook"), { tool: "mcp__stripe__create_charge", tool_use_id: "t4", amount: 5, currency: "usd", customer: "cus_1" }, nextErr);
 rec = receiptsOf("hook");
 check("a tool error is committed, not released", rec.at(-1).decision === "commit" && /may have gone through/.test(rec.at(-1).reason), rec.at(-1));
+out = await mcpHook(S("hook"), { tool: "mcp__stripe__create_charge", tool_use_id: "t4b", amount: 5, currency: "usd", customer: "cus_1" }, nextRefused);
+rec = receiptsOf("hook");
+check("an error with no PostToolUse (refused before running) releases", rec.at(-1).decision === "release" && /before the tool ran/.test(rec.at(-1).reason), rec.at(-1));
 // 15.00 counted (5 + 5 + 5 errored); 6.00 more is over 20.00
 answer = "cancel";
 out = await mcpHook(S("hook"), { tool: "mcp__stripe__create_charge", tool_use_id: "t5", amount: 6, currency: "usd", customer: "cus_1" }, nextOk);
@@ -302,6 +311,43 @@ await mcpHook(S("hook"), { tool: "mcp__stripe__create_charge", tool_use_id: "t8"
 check("a new day starts a new allowance", ui.opened === 0, ui.opened);
 out = await mcpHook(S("hook"), { tool: "mcp__notes__list_payments", tool_use_id: "t9" }, nextOk);
 check("non-payment MCP tools pass straight through", out.result?.ok === true && ui.opened === 0);
+
+// UTC day: 23:30 UTC on the 20th and 00:30 UTC on the 21st are different days wherever the host is
+configureSpend({ dailyAllowance: 20 });
+const late = [{ ts: "2026-11-20T23:30:00.000Z", id: "u1", decision: "allowed", amount: 1900, currency: "usd", payee: "p" }];
+check("the allowance day is the UTC day", ledger(late, "2026-11-20", "usd").spent === 1900 && ledger(late, "2026-11-21", "usd").spent === 0);
+
+// the agent may read receipts, not change them
+const bashHook = hooks.find((h) => h.ev === "tool.call" && h.matcher?.tool === "Bash").fn;
+for (const cmd of ["echo '{}' >> ~/.claude/blast-shield/spend/x.jsonl", "rm -f $HOME/.claude/blast-shield/spend/x.jsonl", "sed -i '' 1d ~/.claude/blast-shield/spend/x.jsonl", "python3 -c 'open(\"/Users/a/.claude/blast-shield/spend/x.jsonl\",\"w\")'"]) {
+  out = await bashHook(S("guard"), { tool: "Bash", command: cmd }, nextOk);
+  check(`receipts guard refuses: ${cmd}`, /spend receipts/.test(out.deny ?? ""), out);
+}
+out = await bashHook(S("guard"), { tool: "Bash", command: "jq -c . ~/.claude/blast-shield/spend/*.jsonl | tail -5" }, nextOk);
+check("receipts guard lets reads through", out.result?.ok === true, out);
+for (const [tool, file_path] of [["Write", "/Users/a/.claude/blast-shield/spend/x.jsonl"], ["Edit", "~/.claude/blast-shield/spend/x.jsonl"]]) {
+  out = await mcpHook(S("guard"), { tool, file_path }, nextOk);
+  check(`receipts guard refuses ${tool}`, /spend receipts/.test(out.deny ?? ""), out);
+}
+out = await mcpHook(S("guard"), { tool: "Write", file_path: "/repo/blast-shield/README.md" }, nextOk);
+check("receipts guard leaves other files alone", out.result?.ok === true, out);
+
+// across processes: four sessions, five 3.00 payments each, against 20.00 at once
+const child = `
+const m = await import(${JSON.stringify(new URL("../hooks/blast-shield.mjs", import.meta.url).href)});
+const { spawnSync } = await import("node:child_process");
+m.configureSpend({ dailyAllowance: 20 });
+const $ = { clock: { now: async () => ${clock} }, process: { run: async (argv, o = {}) => { await new Promise((r) => setTimeout(r, Math.random() * 15)); const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", timeout: o.timeoutMs }); return { exitCode: r.status ?? -1, stdout: r.stdout, stderr: r.stderr }; } } };
+const out = await Promise.all(Array.from({ length: 5 }, () => m.reserveSpend($, { project: "-work-xproc", session: "p" + process.pid }, { tool: "mcp__x__pay", amount: 300, currency: "usd", payee: "a" })));
+console.log(out.filter((x) => x.id).length);
+`;
+const { spawn } = await import("node:child_process");
+const counts = await Promise.all(Array.from({ length: 4 }, () => new Promise((res) => {
+  const p = spawn(process.execPath, ["--input-type=module", "-e", child], { env: { ...process.env, HOME: spendHome } });
+  let o = ""; p.stdout.on("data", (b) => (o += b)); p.stderr.on("data", (b) => (o += b)); p.on("close", () => res(o.trim()));
+})));
+const total = counts.reduce((a, b) => a + Number(b), 0);
+check("reservations across processes never pass the cap", total === 6 && receiptsOf("xproc").filter((x) => x.decision === "allowed").length === 6, counts);
 
 console.log(fails ? `${fails} FAILED` : "ALL PASS");
 process.exit(fails ? 1 : 0);
