@@ -5,8 +5,12 @@ on:
   pull_request:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +109,7 @@ jobs:
             test: ./tests/run.sh && shellcheck architecture-lint.sh tests/run.sh
     name: plugins/${{ matrix.plugin }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: plugins/${{ matrix.plugin }}
@@ -123,6 +128,7 @@ jobs:
 
   marketplace:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: shape (offline, blocking)
