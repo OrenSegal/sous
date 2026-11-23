@@ -362,8 +362,10 @@ A new profile is one JSON file. `sous doctor --profile NAME` checks the
 profile's deny rules.
 
 **Knobs.** `sous status` prints every `SOUS_*` variable in effect, with its
-default: `SOUS_LOG`, `SOUS_GUARD_MS`, `SOUS_MEMORY_LINES`, `SOUS_TEST_LOG` and
-`SOUS_TABLE_CACHE`. The guard's size limits are constants in the guard, not
+default: `SOUS_LOG`, `SOUS_GUARD_MS`, `SOUS_MEMORY_LINES`, `SOUS_TEST_LOG`,
+`SOUS_TABLE_CACHE` and `SOUS_PUSH`. `SOUS_PUSH=ask` (set it in the `env` block
+of `settings.json`) makes a force, mirror or delete push ask you instead of
+blocking; every other rule still blocks. The guard's size limits are constants in the guard, not
 environment variables, so an agent can't raise them.
 
 ## Doctor, report, probe

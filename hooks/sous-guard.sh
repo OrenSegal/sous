@@ -1071,6 +1071,14 @@ d=json.load(sys.stdin); print((d.get("tool_input") or {}).get("command") or d.ge
     exit 2
   fi
   [[ -z ${cmd:-} ]] && exit 0
-  reason=$(sous_guard "$cmd") || { echo "$reason" >&2; exit 2; }
+  if ! reason=$(sous_guard "$cmd"); then
+    # SOUS_PUSH=ask: a destructive push asks the user instead of blocking. The block is still logged, and every
+    # other rule still blocks. Set in settings.json env, not the command line, so an agent can't turn it on.
+    if [[ ${SOUS_PUSH:-} == ask && $reason == *"force, mirror or delete push"* ]]; then
+      printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"sous: force, mirror or delete push. Approve only if you asked for it."}}'
+      exit 0
+    fi
+    echo "$reason" >&2; exit 2
+  fi
   exit 0
 fi
