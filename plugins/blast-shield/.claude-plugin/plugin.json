@@ -1,9 +1,54 @@
 {
   "name": "blast-shield",
-  "version": "1.2.2",
-  "description": "Holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL and more), shows what they would change and whether you can undo it, and runs them only on your say-so.",
-  "author": { "name": "Oren Segal" },
+  "version": "1.3.0",
+  "description": "Holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL and more) and payment tool calls, shows what they would change, and runs them only on your say-so.",
+  "author": {
+    "name": "Oren Segal"
+  },
   "license": "Apache-2.0",
   "repository": "https://github.com/OrenSegal/blast-shield",
-  "keywords": ["mods", "safety", "git", "guardrails"]
+  "keywords": [
+    "mods",
+    "safety",
+    "git",
+    "guardrails",
+    "payments"
+  ],
+  "userConfig": {
+    "spendPatterns": {
+      "type": "string",
+      "title": "Spend: tool name patterns",
+      "description": "Words that mark an MCP tool as a payment, separated by commas. A tool matches when a word of its name (after mcp__<server>__) is one of these or its plural. Tools whose name starts with list, get, retrieve and similar read verbs never match.",
+      "required": false,
+      "default": "charge,payment,pay,transfer,refund,invoice,checkout,payout"
+    },
+    "dailyAllowance": {
+      "type": "number",
+      "title": "Spend: daily allowance",
+      "description": "Payments under this total per day (in major units, e.g. 20 = 20.00) go through without a hold and are still logged. 0 holds every payment.",
+      "required": false,
+      "default": 0
+    },
+    "allowanceCurrency": {
+      "type": "string",
+      "title": "Spend: allowance currency",
+      "description": "The currency of the daily allowance, as a code like usd. A payment in another currency, or with none, is held.",
+      "required": false,
+      "default": "usd"
+    },
+    "minorUnitServers": {
+      "type": "string",
+      "title": "Spend: servers that send cents",
+      "description": "MCP servers whose bare amount field is in minor units (2000 means 20.00), separated by commas, named as their tools name them: stripe for mcp__stripe__create_refund. Every other server's bare amount is read as major units, which over-counts a cents-based server rather than under-counting. Fields named for cents are always minor units.",
+      "required": false,
+      "default": ""
+    },
+    "payeeAllowlist": {
+      "type": "string",
+      "title": "Spend: payee allowlist",
+      "description": "Payees the allowance may pay, separated by commas (an account id, customer id or email, as the tool names it). Empty allows any payee under the allowance. A payee outside the list is always held.",
+      "required": false,
+      "default": ""
+    }
+  }
 }

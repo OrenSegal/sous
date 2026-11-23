@@ -9,6 +9,8 @@
 //
 // tool.call (Bash): if the command is risky, work out its blast radius, open a
 // pane with Proceed and Cancel, and hold the call until one is pressed.
+// tool.call (mcp__*): a tool named like a payment is held the same way, unless
+// an optional daily allowance covers it. Every spend leaves a receipt line.
 // ui.render (Pane): draws the report. If the surface won't place the pane (a
 // narrow terminal), the same report is drawn in the AbovePrompt band instead.
 //
@@ -30,28 +32,24 @@ let held = null;
 // The session's scoreboard, shown in the status line. Cosmetic: a reload resets it.
 const tally = { held: 0, refused: 0, ran: 0 };
 
-export function register(on) {
+export function register(on, options = {}) {
+  configureSpend(options);
+
   on("tool.call", { tool: "Bash" }, async ($, e, next) => {
+    if (writesReceipts(String(e.command ?? ""))) {
+      return { deny: RECEIPTS_DENY };
+    }
     const risk = classify(String(e.command ?? ""));
     if (risk === null) {
       return next(e);
     }
-    // One hold at a time. If another risky call is already held (a subagent's,
-    // say), wait until it is answered. `held` is claimed with no await between
-    // the check and the claim, so two waiting calls can't both get through.
-    while (held !== null) {
-      if (next.signal.aborted) {
-        return { deny: "Blast Shield held this command and did not run it: the turn was interrupted. Do not retry it unless the user asks you to." };
-      }
-      await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
-    }
     const mine = { command: String(e.command), risk, report: null, decision: null, where: "pane" };
-    held = mine;
-
-    let opened = { isPlaced: false };
-    let decision;
     let summary = risk.label;
-    try {
+    const decision = await holdForAnswer($, next, mine, async () => {
+      if (risk.kind === "spend") {
+        mine.report = { summary: `run ${risk.label}`, lines: [], note: "Blast Shield doesn't read amounts from shell commands, so Stripe CLI payments are always held, with or without a daily allowance. It does not reverse payments." };
+        return;
+      }
       // Measure where the command will run: the session folder, moved by any
       // `cd dir &&` or `git -C dir` earlier in the same command line.
       const sessionCwd = await $.session.cwd();
@@ -60,75 +58,51 @@ export function register(on) {
         ? { summary: `${risk.label} in ${risk.dir}`, lines: [], note: `Couldn't find the folder ${risk.dir}, so I couldn't measure what this would change.` }
         : await measure($, risk, cwd);
       summary = mine.report.summary;
+    });
+    scoreboard($, decision, summary, risk.kind === "spend");
 
-      opened = await $.ui.open({ id: PANE_ID, title: "Blast Shield", focus: true, rows: paneRows(mine.report) });
-      if (!opened.isPlaced) {
-        mine.where = "band";
-      }
-      $.ui.invalidate("ui.render");
-
-      const startedAt = await $.clock.now();
-      while (mine.decision === null) {
-        if (next.signal.aborted) {
-          mine.decision = "interrupted";
-          break;
-        }
-        if ((await $.clock.now()) - startedAt > HOLD_LIMIT_MS) {
-          mine.decision = "timeout";
-          break;
-        }
-        await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
-      }
-    } catch {
-      mine.decision = "error"; // anything unexpected refuses the command
-    } finally {
-      decision = mine.decision;
-      // Close this call's pane before releasing the hold, so the next call's
-      // pane can't be the one that gets closed.
-      try {
-        if (opened.isPlaced) {
-          await $.ui.close({ id: PANE_ID });
-        }
-      } catch {
-        // the pane is already gone
-      }
-      if (held === mine) {
-        held = null;
-      }
-      $.ui.invalidate("ui.render");
+    if (risk.kind === "spend") {
+      // The label is the CLI's resource and verb only: never the raw line, which can carry an API key.
+      return settleHeldSpend($, e, next, decision, { tool: `Bash: ${risk.label}`, amount: null, currency: null, payee: null }, summary);
     }
-
-    tally.held += 1;
-    if (decision === "proceed") {
-      tally.ran += 1;
-    } else {
-      tally.refused += 1;
-    }
-    try {
-      $.ui.status(`${tally.held} held · ${tally.refused} refused · ${tally.ran} ran`);
-      if (decision === "cancel") {
-        $.ui.toast(`Blast Shield spared you: ${summary}`);
-      }
-    } catch {
-      // the scoreboard is cosmetic; never let it change the answer
-    }
-
     if (decision === "proceed") {
       $.ui.toast("Blast Shield: running it");
       return next(e);
     }
-    const why = {
-      cancel: "the user pressed Cancel",
-      timeout: "no answer within 10 minutes",
-      interrupted: "the turn was interrupted",
-      error: "Blast Shield hit an error while holding it",
-    }[decision] ?? "no answer was recorded";
     return {
-      deny: `Blast Shield held this command and did not run it: ${why}. It would have: ${summary}. It matched the rule for ${risk.label}.${impactForClaude(mine)} Do not retry it unless the user asks you to.`,
+      deny: `Blast Shield held this command and did not run it: ${WHY[decision] ?? "no answer was recorded"}. It would have: ${summary}. It matched the rule for ${risk.label}.${impactForClaude(mine)} Do not retry it unless the user asks you to.`,
     };
    }).catch(($, e, next) => next.called
     ? next(e)
     : { deny: "Blast Shield held this command and did not run it: it hit an error while checking it. Do not retry it unless the user asks you to." });
+
+  // MCP tools whose names look like payments. Every other tool passes straight through.
+  on("tool.call", async ($, e, next) => {
+    if (FILE_TOOLS.has(e.tool) && touchesReceipts(String(e.file_path ?? e.notebook_path ?? ""))) {
+      return { deny: RECEIPTS_DENY };
+    }
+    const pattern = spendPatternOf(String(e.tool ?? ""));
+    if (pattern === null) {
+      return next(e);
+    }
+    return spendCall($, e, next, pattern);
+  }).catch(($, e, next) => next.called
+    ? next(e)
+    : { deny: "Blast Shield held this payment and did not run it: it hit an error while checking it. Do not retry it unless the user asks you to." });
+
+  // Only the tool_use_id is kept, and only until the call settles.
+  on("classic.PostToolUse", ($, e, next) => {
+    if (spendPatternOf(String(e.tool_name ?? "")) !== null) {
+      ranCalls.add(e.tool_use_id);
+    }
+    return next(e);
+  });
+  on("classic.PostToolUseFailure", ($, e, next) => {
+    if (spendPatternOf(String(e.tool_name ?? "")) !== null) {
+      ranCalls.add(e.tool_use_id);
+    }
+    return next(e);
+  });
 
   on("ui.render", { component: "Pane" }, ($, e, next) => {
     if (e.requestId !== PANE_ID || held === null || held.report === null) {
@@ -148,6 +122,465 @@ export function register(on) {
 function impactForClaude(held) {
   const lines = held?.report?.impact;
   return Array.isArray(lines) && lines.length > 0 ? ` Consequences: ${lines.join(" ")}` : "";
+}
+
+const WHY = {
+  cancel: "the user pressed Cancel",
+  timeout: "no answer within 10 minutes",
+  interrupted: "the turn was interrupted",
+  error: "Blast Shield hit an error while holding it",
+};
+
+/**
+ * Holds `mine` until Proceed, Cancel, a timeout or an interrupt, and returns that decision.
+ * `prepare` fills `mine.report` once this call owns the hold.
+ */
+async function holdForAnswer($, next, mine, prepare) {
+  // One hold at a time. If another call is already held (a subagent's, say),
+  // wait until it is answered. `held` is claimed with no await between the
+  // check and the claim, so two waiting calls can't both get through.
+  while (held !== null) {
+    if (next.signal.aborted) {
+      return "interrupted";
+    }
+    await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
+  }
+  held = mine;
+  let opened = { isPlaced: false };
+  try {
+    await prepare();
+    opened = await $.ui.open({ id: PANE_ID, title: "Blast Shield", focus: true, rows: paneRows(mine.report) });
+    if (!opened.isPlaced) {
+      mine.where = "band";
+    }
+    $.ui.invalidate("ui.render");
+
+    const startedAt = await $.clock.now();
+    while (mine.decision === null) {
+      if (next.signal.aborted) {
+        mine.decision = "interrupted";
+        break;
+      }
+      if ((await $.clock.now()) - startedAt > HOLD_LIMIT_MS) {
+        mine.decision = "timeout";
+        break;
+      }
+      await $.process.run(["sleep", POLL_SECONDS], { timeoutMs: 5000 });
+    }
+  } catch {
+    mine.decision = "error"; // anything unexpected refuses the call
+  } finally {
+    // Close this call's pane before releasing the hold, so the next call's
+    // pane can't be the one that gets closed.
+    try {
+      if (opened.isPlaced) {
+        await $.ui.close({ id: PANE_ID });
+      }
+    } catch {
+      // the pane is already gone
+    }
+    if (held === mine) {
+      held = null;
+    }
+    $.ui.invalidate("ui.render");
+  }
+  return mine.decision;
+}
+
+function scoreboard($, decision, summary, isSpend) {
+  tally.held += 1;
+  if (decision === "proceed") {
+    tally.ran += 1;
+  } else {
+    tally.refused += 1;
+  }
+  try {
+    $.ui.status(`${tally.held} held · ${tally.refused} refused · ${tally.ran} ran`);
+    if (decision === "cancel") {
+      $.ui.toast(isSpend ? `Blast Shield stopped a payment: ${summary}` : `Blast Shield spared you: ${summary}`);
+    }
+  } catch {
+    // the scoreboard is cosmetic; never let it change the answer
+  }
+}
+
+// ---- Spend: payments an agent makes -----------------------------------------
+// MCP tools named like payments, and Stripe CLI payment commands, are held for
+// Proceed or Cancel. An optional daily allowance lets small, readable payments
+// through. Each decision is appended to a per-project receipts file.
+//
+// The allowance is reserve, then commit or release: a payment that may go
+// through is written to the receipts as "allowed" (or "approved" after Proceed)
+// before it runs, so it counts toward today's total while it is in flight. When
+// the tool answers, a "commit" line settles it, or a "release" line takes it
+// back out if the call never ran (it was denied). A tool error is committed,
+// not released: the payment may have gone through.
+
+// The receipts are the allowance's ledger, so the agent may read them but not change them.
+const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+const RECEIPTS_DENY = "Blast Shield refused this: it would change the spend receipts in ~/.claude/blast-shield/, which the daily allowance is counted from. Reading them is fine. Do not retry it unless the user asks you to.";
+export const touchesReceipts = (path) => /(^|\/)\.claude\/blast-shield(\/|$)/.test(path);
+// shortcut: reads the command text, so a path built from variables gets past it; a permission deny rule is the hard block.
+const WRITE_WORDS = />|\b(rm|mv|cp|tee|truncate|dd|ln|unlink|shred|chmod|chown|touch|rmdir|perl|ruby|node|python[\d.]*|vi|vim|nano|ed)\b|\bsed\b[^|;&]*\s-i/;
+export const writesReceipts = (command) => /\.claude\/blast-shield\b/.test(command) && WRITE_WORDS.test(command);
+
+const DEFAULT_SPEND_PATTERNS = "charge,payment,pay,transfer,refund,invoice,checkout,payout";
+// A first word that only reads, so `list_invoices` or `get_payment` is not a payment.
+const READ_VERBS = new Set(["list", "get", "retrieve", "search", "read", "fetch", "find", "describe", "count", "show", "view", "lookup"]);
+const STRIPE_WRITE_VERBS = new Set(["create", "pay", "confirm", "capture", "finalize", "send", "post"]);
+const MINOR_KEYS = ["amount_cents", "amount_in_cents", "cents", "amount_minor"];
+const PAYEE_KEYS = ["payee", "recipient", "destination", "to", "customer", "merchant", "vendor", "account"];
+
+const spend = { patterns: [], allowance: 0, currency: "usd", minorServers: [], payees: [] };
+
+const commaList = (text) => String(text ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+/** Reads the plugin's userConfig into `spend`. Called by register; tests call it directly. */
+export function configureSpend(options = {}) {
+  spend.patterns = commaList(options.spendPatterns ?? DEFAULT_SPEND_PATTERNS);
+  const daily = Number(options.dailyAllowance ?? 0);
+  spend.allowance = Number.isFinite(daily) && daily > 0 ? Math.round(daily * 100) : 0;
+  spend.currency = String(options.allowanceCurrency ?? "usd").trim().toLowerCase();
+  spend.minorServers = commaList(options.minorUnitServers);
+  spend.payees = commaList(options.payeeAllowlist);
+  return spend;
+}
+configureSpend();
+
+/** Lowercase words of a name: `createPaymentIntent` and `create_payment_intent` give the same three. */
+function nameWords(text) {
+  return String(text).replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/** The pattern a word matches, whole or as its plural (`charges`, `invoices`), or undefined. */
+function wordPattern(word) {
+  return spend.patterns.find((p) => word === p || word === `${p}s` || word === `${p}es`);
+}
+
+/** The spend pattern an MCP tool's name matches, or null. Only the tool part counts, not the server's name. */
+export function spendPatternOf(tool) {
+  if (!tool.startsWith("mcp__")) {
+    return null;
+  }
+  const words = nameWords(tool.split("__").slice(2).join("_"));
+  if (words.length === 0 || READ_VERBS.has(words[0])) {
+    return null;
+  }
+  for (const word of words) {
+    const hit = wordPattern(word);
+    if (hit) {
+      return hit;
+    }
+  }
+  return null;
+}
+
+/**
+ * `stripe <resource> <verb>` (or `stripe post /v1/...`) that moves money; null otherwise.
+ * Every bare word counts, flag values included: a stray "pay" in a description over-holds,
+ * which is the safe side. The label names only the matched words, never a key or other value.
+ */
+function classifyStripe(args, dir) {
+  const plain = args.filter((a) => !a.startsWith("-"));
+  // Verbs can be compound: `stripe invoices finalize_invoice`, `send_invoice`.
+  const verb = plain.find((w) => nameWords(w).some((word) => STRIPE_WRITE_VERBS.has(word)));
+  const resource = plain.find((w) => w !== verb && nameWords(w).some((word) => wordPattern(word)));
+  if (!verb || !resource) {
+    return null;
+  }
+  const safe = (w, fallback) => (/^[\w/.-]{1,40}$/.test(w) ? w : fallback);
+  const shown = safe(resource, "payment");
+  return { kind: "spend", label: verb === "post" ? `stripe post ${shown}` : `stripe ${shown} ${safe(verb, "create")}`, dir };
+}
+
+/** A positive whole number of minor units (cents), or null when the value can't be trusted. */
+function toMinor(value, isMinor) {
+  const n = typeof value === "number" ? value : /^\s*\d+(\.\d+)?\s*$/.test(String(value)) ? Number(value) : NaN;
+  if (!Number.isFinite(n) || n <= 0) {
+    return null;
+  }
+  if (isMinor) {
+    return Number.isInteger(n) ? n : null;
+  }
+  const cents = Math.round(n * 100);
+  return Math.abs(cents - n * 100) < 1e-6 ? cents : null; // more than two decimals: not a plain money amount
+}
+
+/**
+ * { amount, currency, payee } from a tool's input. amount is in minor units, or null.
+ * A key named for cents is always minor units. A bare `amount` is minor units only for a
+ * server listed in minorUnitServers; otherwise major, which over-counts a cents-based API
+ * rather than under-counting a dollar-based one.
+ */
+export function readSpend(input, tool = String(input?.tool ?? "")) {
+  const bareIsMinor = spend.minorServers.includes((tool.split("__")[1] ?? "").toLowerCase());
+  const scopes = [input, ...Object.values(input ?? {}).filter((v) => v && typeof v === "object" && !Array.isArray(v))];
+  let amount = null;
+  let currency = null;
+  let payee = null;
+  for (const scope of scopes) {
+    if (amount === null) {
+      const minorKey = MINOR_KEYS.find((k) => scope[k] !== undefined);
+      if (minorKey) {
+        amount = toMinor(scope[minorKey], true);
+      } else if (scope.amount !== undefined) {
+        amount = toMinor(scope.amount, bareIsMinor);
+      }
+    }
+    if (currency === null && typeof scope.currency === "string" && scope.currency.trim()) {
+      currency = scope.currency.trim().toLowerCase();
+    }
+    if (payee === null) {
+      const key = PAYEE_KEYS.find((k) => typeof scope[k] === "string" || typeof scope[k] === "number");
+      if (key) {
+        payee = String(scope[key]).trim() || null;
+      }
+    }
+  }
+  return { amount, currency, payee };
+}
+
+export function money(minor, currency) {
+  return minor === null ? "an amount I couldn't read" : `${(minor / 100).toFixed(2)} ${(currency ?? "").toUpperCase()}`.trim();
+}
+
+/** The UTC calendar day of a time in ms, as YYYY-MM-DD. UTC, so it doesn't depend on the host's time zone. */
+function dayOf(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** Parses JSONL receipts, skipping lines that don't parse (a partial write, a hand edit). */
+export function parseReceipts(text) {
+  return String(text).split("\n").flatMap((line) => {
+    try {
+      return line.trim() ? [JSON.parse(line)] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+const RESERVED = new Set(["allowed", "approved"]);
+
+/** Today's reserved total in `currency` (minus released ones), and every payee that has been paid. */
+export function ledger(receipts, day, currency) {
+  const released = new Set(receipts.filter((r) => r.decision === "release").map((r) => r.id));
+  let spent = 0;
+  const paid = new Set();
+  for (const r of receipts) {
+    if (!RESERVED.has(r.decision) || released.has(r.id)) {
+      continue;
+    }
+    if (typeof r.payee === "string") {
+      paid.add(r.payee.toLowerCase());
+    }
+    if (dayOf(Date.parse(r.ts)) === day && r.currency === currency && Number.isFinite(r.amount)) {
+      spent += r.amount;
+    }
+  }
+  return { spent, paid };
+}
+
+/**
+ * Why this payment needs a person, given the receipts so far (null = they couldn't be read).
+ * An empty `reasons` means the allowance covers it.
+ */
+export function checkSpend(call, receipts, day) {
+  const reasons = [];
+  if (spend.payees.length > 0 && !spend.payees.includes(String(call.payee ?? "").toLowerCase())) {
+    reasons.push(call.payee ? `${call.payee} is not on the payee allowlist` : "no payee found, and a payee allowlist is set");
+  }
+  const { spent, paid } = receipts ? ledger(receipts, day, spend.currency) : { spent: 0, paid: new Set() };
+  const firstPayee = call.payee !== null && receipts !== null && !paid.has(call.payee.toLowerCase());
+  if (spend.allowance === 0) {
+    reasons.push("every payment is held (no daily allowance is set)");
+  } else if (receipts === null) {
+    reasons.push("the receipts file couldn't be read, so today's total is unknown");
+  } else if (call.amount === null) {
+    reasons.push("no amount found in the call");
+  } else if (call.currency !== spend.currency) {
+    reasons.push(call.currency ? `the allowance is in ${spend.currency.toUpperCase()}, this is ${call.currency.toUpperCase()}` : "no currency found in the call");
+  } else if (spent + call.amount > spend.allowance) {
+    reasons.push(`it would bring today's total to ${money(spent + call.amount, spend.currency)}, over the daily allowance of ${money(spend.allowance, spend.currency)}`);
+  }
+  return { reasons, firstPayee, spent };
+}
+
+// The receipts live outside the project, so they never land in git. One file per project folder.
+const RECEIPTS = `f="$HOME/.claude/blast-shield/spend/$1.jsonl"`;
+const READ_RECEIPTS = `${RECEIPTS}; [ -f "$f" ] || exit 0; cat -- "$f"`;
+// A lock folder shared by every session in the project: mkdir either creates it or fails, atomically.
+// A lock older than a minute is from a session that died holding it, and is broken. Waits up to 10 s.
+const LOCK_RECEIPTS = `${RECEIPTS}; mkdir -p "$(dirname "$f")" || exit 1; i=0
+while ! mkdir "$f.lock" 2>/dev/null; do
+  i=$((i+1))
+  if [ "$i" -ge 100 ]; then
+    [ -n "$(find "$f.lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$f.lock" 2>/dev/null && i=0 && continue
+    exit 1
+  fi
+  sleep 0.1
+done`;
+const UNLOCK_RECEIPTS = `${RECEIPTS}; rmdir "$f.lock" 2>/dev/null; exit 0`;
+// >> opens the file in append mode, so lines from two sessions don't overwrite each other.
+const APPEND_RECEIPT = `${RECEIPTS}; mkdir -p "$(dirname "$f")" && printf '%s\\n' "$2" >> "$f"`;
+
+/** { project, session } for receipts. */
+async function spendContext($) {
+  const cwd = await $.session.cwd();
+  let session = "";
+  try {
+    session = await $.session.id();
+  } catch {
+    // older hosts: the receipt just has no session
+  }
+  return { project: String(cwd).replace(/[^A-Za-z0-9]+/g, "-"), session };
+}
+
+// shortcut: reads the whole receipts file on every payment; rotate it by hand if it grows to many MB.
+async function readReceipts($, ctx) {
+  try {
+    const run = await $.process.run(["sh", "-c", READ_RECEIPTS, "blast-shield", ctx.project], { timeoutMs: 5000 });
+    // A cut-off read could drop today's lines and under-count, so it holds like a failed one.
+    return run.exitCode === 0 && !run.isStdoutTruncated ? parseReceipts(run.stdout) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Appends one receipt line. Throws if it couldn't be written. */
+async function writeReceipt($, ctx, row) {
+  const line = JSON.stringify({ ts: new Date(await $.clock.now()).toISOString(), session: ctx.session, ...row });
+  const run = await $.process.run(["sh", "-c", APPEND_RECEIPT, "blast-shield", ctx.project, line], { timeoutMs: 5000 });
+  if (run.exitCode !== 0) {
+    throw new Error(`couldn't write the receipt: ${run.stderr.trim().slice(0, 200)}`);
+  }
+}
+
+// Read, check and reserve run one at a time, so two payments can't both fit under the same room:
+// in this session through the queue, across sessions through the lock folder.
+let spendQueue = Promise.resolve();
+function oneAtATime(work) {
+  const run = spendQueue.then(work);
+  spendQueue = run.catch(() => {});
+  return run;
+}
+
+let reservations = 0;
+
+/**
+ * Checks a payment against the allowance and, if it fits, reserves it with an "allowed"
+ * receipt. Returns { id, reasons, firstPayee, spent }: id is set only when it was reserved.
+ */
+export function reserveSpend($, ctx, call) {
+  return oneAtATime(async () => {
+    const now = await $.clock.now();
+    const locked = await $.process.run(["sh", "-c", LOCK_RECEIPTS, "blast-shield", ctx.project], { timeoutMs: 15000 }).then((r) => r.exitCode === 0, () => false);
+    try {
+      const receipts = locked ? await readReceipts($, ctx) : null;
+      const check = checkSpend(call, receipts, dayOf(now));
+      if (!locked) {
+        check.reasons = check.reasons.filter((r) => !/receipts file/.test(r)).concat("another session held the receipts lock for over 10 seconds");
+      }
+      if (check.reasons.length > 0) {
+        return check;
+      }
+      const id = `${now.toString(36)}-${(reservations += 1).toString(36)}-${ctx.session.slice(0, 8)}`;
+      await writeReceipt($, ctx, { id, tool: call.tool, amount: call.amount, currency: call.currency, payee: call.payee, decision: "allowed", reason: "under the daily allowance" });
+      return { ...check, id };
+    } finally {
+      if (locked) {
+        await $.process.run(["sh", "-c", UNLOCK_RECEIPTS, "blast-shield", ctx.project], { timeoutMs: 5000 }).catch(() => {});
+      }
+    }
+  });
+}
+
+// tool_use_ids of calls the tool actually ran, from the host's PostToolUse and PostToolUseFailure
+// events. A call that errors without one was refused before it ran (a permission rule, the prompt).
+const ranCalls = new Set();
+
+/** Commits or releases a reservation once the tool has answered. */
+async function settleSpend($, ctx, id, call, result, toolUseId) {
+  // Only MCP calls are tracked; a shell command that errors is counted as before.
+  const neverRan = result?.isError && call.tool.startsWith("mcp__") && toolUseId !== undefined && !ranCalls.has(toolUseId);
+  ranCalls.delete(toolUseId);
+  const released = result?.deny !== undefined || neverRan;
+  const reason = result?.deny !== undefined ? "the call was denied, so nothing was paid"
+    : neverRan ? "refused before the tool ran, so nothing was paid"
+      : result?.isError ? "the tool reported an error; counted, because the payment may have gone through"
+        : "the tool answered";
+  try {
+    await oneAtATime(() => writeReceipt($, ctx, { id, tool: call.tool, amount: call.amount, currency: call.currency, payee: call.payee, decision: released ? "release" : "commit", reason }));
+  } catch {
+    // the reservation stays counted, which keeps the cap on the safe side
+  }
+}
+
+/** A payment the hook decided on: run it under a reservation, or refuse it, and leave a receipt either way. */
+async function settleHeldSpend($, e, next, decision, call, summary) {
+  const ctx = await spendContext($);
+  if (decision !== "proceed") {
+    const why = WHY[decision] ?? "no answer was recorded";
+    try {
+      await oneAtATime(() => writeReceipt($, ctx, { tool: call.tool, amount: call.amount, currency: call.currency, payee: call.payee, decision: decision ?? "error", reason: why }));
+    } catch {
+      // refusing doesn't depend on the receipt
+    }
+    return { deny: `Blast Shield held this payment and did not run it: ${why}. It would have: ${summary}. Do not retry it unless the user asks you to.` };
+  }
+  const id = `${(await $.clock.now()).toString(36)}-${(reservations += 1).toString(36)}-${ctx.session.slice(0, 8)}`;
+  try {
+    await oneAtATime(() => writeReceipt($, ctx, { id, tool: call.tool, amount: call.amount, currency: call.currency, payee: call.payee, decision: "approved", reason: "the user pressed Proceed" }));
+  } catch {
+    return { deny: "Blast Shield held this payment and did not run it: the user pressed Proceed, but the receipt couldn't be written. Do not retry it unless the user asks you to." };
+  }
+  $.ui.toast("Blast Shield: running it");
+  let result;
+  try {
+    result = await next(e);
+    return result;
+  } finally {
+    await settleSpend($, ctx, id, call, result ?? { isError: true }, e.tool_use_id);
+  }
+}
+
+/** An MCP tool call that matched a spend pattern. */
+async function spendCall($, e, next, pattern) {
+  const tool = String(e.tool);
+  const call = { tool, ...readSpend(e, tool) };
+  const ctx = await spendContext($);
+  const check = await reserveSpend($, ctx, call);
+  const what = `pay ${money(call.amount, call.currency)} to ${call.payee ?? "a payee I couldn't read"}`;
+
+  if (check.id) {
+    try {
+      $.ui.toast(`Blast Shield: allowed ${money(call.amount, call.currency)} (today ${money(check.spent + call.amount, spend.currency)} of ${money(spend.allowance, spend.currency)})${check.firstPayee ? `. First payment to ${call.payee}.` : ""}`);
+    } catch {
+      // cosmetic
+    }
+    let result;
+    try {
+      result = await next(e);
+      return result;
+    } finally {
+      await settleSpend($, ctx, check.id, call, result ?? { isError: true }, e.tool_use_id);
+    }
+  }
+
+  const { tool: _t, tool_use_id: _id, ...args } = e;
+  const impact = check.firstPayee ? [`First payment to ${call.payee} in this project, by the receipts.`] : [];
+  const mine = {
+    command: `${tool} ${JSON.stringify(args)}`,
+    risk: { kind: "spend", label: tool },
+    title: "⚠ Blast Shield held this payment",
+    why: `The tool name matches the spend pattern "${pattern}".`,
+    report: { summary: what, lines: [], impact, note: `Held because ${check.reasons.join("; ")}. Blast Shield does not reverse payments.` },
+    decision: null,
+    where: "pane",
+  };
+  const decision = await holdForAnswer($, next, mine, async () => {});
+  scoreboard($, decision, what, true);
+  return settleHeldSpend($, e, next, decision, call, what);
 }
 
 // ---- What counts as risky -------------------------------------------------
@@ -307,6 +740,12 @@ function classifySegment(segment, dir, pushed) {
       const exec = classifyFindExec(args, dir);
       if (exec !== null) {
         return exec;
+      }
+    }
+    if (base === "stripe") {
+      const payment = classifyStripe(args, dir);
+      if (payment !== null) {
+        return payment;
       }
     }
     const infra = classifyInfra(cmd, args, dir);
@@ -533,7 +972,7 @@ async function measureCore($, risk, cwd) {
     if (risk.kind === "terraform-destroy") {
       return await measureTerraform($, risk, cwd);
     }
-    if (risk.kind === "opaque") {
+    if (risk.kind === "opaque" || risk.kind === "spend") {
       return { summary: risk.label, lines: [], note: risk.note };
     }
     if (risk.kind === "find-delete") {
@@ -1068,6 +1507,9 @@ const UNDO = {
 // Why this command was held, and whether only part of it was looked at.
 function whyHeld(state) {
   const { risk, command } = state;
+  if (state.why) {
+    return state.why;
+  }
   const part = risk.segment ?? command;
   const partial = part.trim() !== command.trim();
   const shown = part.length > 80 ? `${part.slice(0, 80)}...` : part;
@@ -1102,7 +1544,7 @@ export function draw(t, state) {
     borderColor: "yellow",
     paddingX: 1,
     children: [
-      Text({ key: "title", bold: true, color: "yellow", children: "⚠ Blast Shield held this command" }),
+      Text({ key: "title", bold: true, color: "yellow", children: state.title ?? "⚠ Blast Shield held this command" }),
       Text({ key: "cmd", children: [Text({ dimColor: true, children: "Command  " }), Text({ bold: true, children: state.command.length > 300 ? `${state.command.slice(0, 300)}... (${state.command.length} characters)` : state.command })], wrap: "wrap" }),
       Text({ key: "sum", children: [Text({ dimColor: true, children: "Would    " }), Text({ color: "red", bold: true, children: report.summary })], wrap: "wrap" }),
       Text({ key: "why", children: [Text({ dimColor: true, children: "Held     " }), Text({ children: whyHeld(state) })], wrap: "wrap" }),
