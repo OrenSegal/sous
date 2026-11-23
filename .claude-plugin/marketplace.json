@@ -61,7 +61,7 @@
       "name": "blast-shield",
       "source": "./plugins/blast-shield",
       "description": "Mod: holds risky shell commands (rm, git reset/clean/force-push, kubectl, terraform, docker, SQL), shows what they would change and whether it can be undone, and runs them only on Proceed. Apache-2.0 fork of Anthropic's Blast Radius; see plugins/blast-shield/NOTICE.",
-      "version": "1.2.2",
+      "version": "1.3.0",
       "author": {
         "name": "Oren Segal"
       },
