@@ -466,6 +466,7 @@ KNOBS = (
     ("SOUS_MEMORY_LINES", "400", "doctor's line budget per memory file"),
     ("SOUS_TEST_LOG", "<git dir>/sous-test.log", "test log `sous gate` and `tests-ran` read"),
     ("SOUS_TABLE_CACHE", "on (off under CI)", "cache doctor's guard-table pass by content hash"),
+    ("SOUS_PUSH", "block", "ask: a force, mirror or delete push asks the user instead of blocking"),
 )
 
 

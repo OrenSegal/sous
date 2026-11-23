@@ -166,5 +166,16 @@ if [ "$(cut -f3 "$SOUS_LOG")" = "$want" ] && [ "$(wc -l <"$SOUS_LOG")" -eq 2 ]; 
   fail=$((fail + 1)); printf 'FAIL block log path column: want\n%s\ngot:\n' "$want" >&2; cat "$SOUS_LOG" >&2
 fi
 
+# SOUS_PUSH=ask turns a destructive push into an ask (exit 0, permissionDecision ask on stdout).
+# Unset, it blocks. Other rules block either way.
+ask_out=$(cd "$SANDBOX_DIR" && jq -cn '{tool_input:{command:"git push origin --delete old"}}' | CLAUDE_TOOL_INPUT='' SOUS_PUSH=ask "$BASH" "$HOOK" 2>/dev/null); ask_rc=$?
+if [ "$ask_rc" = 0 ] && [ "$(printf '%s' "$ask_out" | jq -r .hookSpecificOutput.permissionDecision)" = ask ]; then pass=$((pass + 1)); else
+  fail=$((fail + 1)); printf 'FAIL SOUS_PUSH=ask push: rc=%s out=%s\n' "$ask_rc" "$ask_out" >&2
+fi
+SOUS_PUSH=ask check 2 'rm -rf vendor'
+SOUS_PUSH=ask check 0 'git push origin main'
+SOUS_PUSH=nope check 2 'git push --force origin main'
+check 2 'git push origin --delete old'
+
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
