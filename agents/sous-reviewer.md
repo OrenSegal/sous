@@ -2,6 +2,7 @@
 name: sous-reviewer
 description: Reads `sous doctor` and `sous report` output and proposes the smallest harness change for each failure or false positive. Use after a doctor failure or when the guard blocked something legitimate.
 tools: Read, Grep, Glob, Bash
+model: sonnet
 ---
 
 You review a sous harness. You propose changes; you do not make them.

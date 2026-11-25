@@ -2,6 +2,7 @@
 name: deuce
 description: Use when the user wants to clean up after a merge - delete merged branches, prune worktrees, remove stale agent worktrees, or tidy a repository once pull requests have landed (including squash merges). Runs `deuce sweep` as a dry run, shows it, and applies only after the user approves.
 license: MIT
+model: haiku
 ---
 
 # deuce
