@@ -1,0 +1,10 @@
+{
+  "name": "brigade",
+  "version": "0.1.0",
+  "description": "Routes each piece of work to the cheapest model that can do it safely, checks it with a verify ladder per stack (iOS, web, API, data), and turns what went wrong into tests, rules or notes. Includes retro and compound from Every's compound-engineering and writing-skills from superpowers.",
+  "author": { "name": "Oren Segal" },
+  "homepage": "https://github.com/OrenSegal/sous/tree/main/plugins/brigade",
+  "repository": "https://github.com/OrenSegal/sous",
+  "license": "MIT",
+  "keywords": ["routing", "subagents", "verification", "retro", "claude-code"]
+}
