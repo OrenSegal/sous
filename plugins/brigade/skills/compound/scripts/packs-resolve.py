@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Resolve the Compound Packs declared in this repo's CE config into pack roots.
 
-Reads the `packs:` list from `<repo-root>/.compound-engineering/config.yaml`
+Reads the `packs:` list from `<repo-root>/.brigade/config.yaml`
 and `config.local.yaml` (both layers concatenate; local adds, never replaces),
 validates each entry, resolves path and git sources, enumerates the packs each
 source publishes, applies selection, and prints one JSON object to stdout:
@@ -41,7 +41,7 @@ Entry shape (documented subset -- anything else under `packs:` is a loud error):
         id: rails-core                         # rename (single-pack entries)
       - source: https://github.com/o/r/tree/main/packs   # tree-URL sugar
 
-Git sources cache under `<scratch-root>/ce-packs/<sha256(url\\nref)>` with an
+Git sources cache under `<scratch-root>/packs/<sha256(url\\nref)>` with an
 atomic temp-clone-then-rename, so a keyed path's existence proves a complete
 clone. All git subprocesses run non-interactively (GIT_TERMINAL_PROMPT=0, ssh
 BatchMode, bounded timeout): missing credentials degrade to a warning, never a
@@ -143,14 +143,14 @@ def cache_base() -> str | None:
         return root
     if IS_WINDOWS:
         base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
-        root = os.path.join(base, "compound-engineering-packs")
+        root = os.path.join(base, "brigade-packs")
         return root if _private_root_usable(root) else None
     if _EFFECTIVE_UID is None:
         return None
     for base in ("/tmp", os.environ.get("TMPDIR") or "/tmp"):
-        root = os.path.join(base, f"compound-engineering-{_EFFECTIVE_UID}")
+        root = os.path.join(base, f"brigade-{_EFFECTIVE_UID}")
         if _private_root_usable(root):
-            packs = os.path.join(root, "ce-packs")
+            packs = os.path.join(root, "packs")
             if _private_root_usable(packs):
                 return packs
     return None
@@ -691,7 +691,7 @@ def _main(argv: list) -> int:
     if repo_root is None:
         warnings.append("not inside a git repository; no CE config to read")
         return _emit(args.declared_only, entries, roots, warnings, errors)
-    cfg_dir = os.path.join(repo_root, ".compound-engineering")
+    cfg_dir = os.path.join(repo_root, ".brigade")
     for name in CONFIG_FILES:
         entries.extend(parse_packs_block(os.path.join(cfg_dir, name), errors))
 

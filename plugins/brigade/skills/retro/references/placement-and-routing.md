@@ -29,12 +29,12 @@ Name the place the right agent will actually read:
 
 | The fix | Owner |
 |---|---|
-| An edit to an instruction file, doc, small script, or the repo's harness settings | `ce-retro` applies it after approval. |
-| A lesson about how the product code behaves, or a check that guards product behavior | `ce-compound`, which still applies its own bar and may decline. |
-| A rewrite of the coding standards or review docs as a whole | `ce-setup` with `standards`. |
-| A change to product code, such as merging two ways of doing one thing or making a hidden dependency explicit | `ce-plan`, with the item as its input. |
+| An edit to an instruction file, doc, small script, or the repo's harness settings | `retro` applies it after approval. |
+| A lesson about how the product code behaves, or a check that guards product behavior | `compound`, which still applies its own bar and may decline. |
+| A rewrite of the coding standards or review docs as a whole | a patch to the standards file, approved by the user. |
+| A change to product code, such as merging two ways of doing one thing or making a hidden dependency explicit | the project's planning flow, with the item as its input. |
 | Friction caused by a skill or plugin | An issue drafted for the user to post upstream. Never post it yourself. |
-| A file outside the repo, such as the user's global instruction file | `ce-retro` applies it, but only after that item's own diff approval and a backup. |
+| A file outside the repo, such as the user's global instruction file | `retro` applies it, but only after that item's own diff approval and a backup. |
 
 ## Success signal
 

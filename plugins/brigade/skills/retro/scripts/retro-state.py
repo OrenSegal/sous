@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Repo identity and decision ledger for ce-retro.
+"""Repo identity and decision ledger for retro.
 
 This script is the only writer of the ledger. It resolves which directories
 belong to the repository, where the shared store lives, and what earlier runs
 decided. Every subcommand prints one JSON object to stdout.
 
 Store location:
-  <main checkout>/.context/compound-engineering/ce-retro/
+  <main checkout>/.context/brigade/retro/
     The main checkout is the first entry of `git worktree list`, so every
     linked worktree resolves the same store.
-  <git common dir>/compound-engineering/ce-retro/
+  <git common dir>/brigade/retro/
     Used whenever the common repository is bare, even with worktrees attached.
 
 Store files:
@@ -147,12 +147,12 @@ def resolve_store(cwd, create=True):
     info = roots(cwd)
     if info["main_checkout"] is None:
         base = info["common_dir"]
-        chain = ["compound-engineering", "ce-retro"]
+        chain = ["brigade", "retro"]
         gitignored = None
     else:
         base = info["main_checkout"]
-        chain = [".context", "compound-engineering", "ce-retro"]
-        gitignored = git(base, "check-ignore", "-q", ".context/compound-engineering/").returncode == 0
+        chain = [".context", "brigade", "retro"]
+        gitignored = git(base, "check-ignore", "-q", ".context/brigade/").returncode == 0
 
     store = guard_chain(base, chain, create, restrict_from=len(chain) - 1)
 

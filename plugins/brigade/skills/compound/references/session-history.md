@@ -51,7 +51,7 @@ Resolve two values at runtime with the shell tool before Phase 1 session-history
 
    **Escalation check.** The discovery+metadata pass above is the cheap probe and always runs in Full mode. Escalate to the extraction and synthesis stages below **only** when at least one retained candidate clears the relevance bar: a current-branch match, or ≥2 topic-keyword matches. If no candidate clears the bar (including a `files_processed` total of `0`), stop here, record `no relevant prior sessions` as the session-history input, and skip extraction and synthesis. This check is what keeps the always-on probe cheap. The expensive synthesis runs only when a prior session is genuinely relevant.
 
-   **Extraction pipeline.** Create `SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/ce-compound-sessions-XXXXXX")`. For each selected session, write extracted content to scratch files:
+   **Extraction pipeline.** Create `SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/compound-sessions-XXXXXX")`. For each selected session, write extracted content to scratch files:
 
    ```bash
    SKILL_DIR="<absolute path of the directory containing the SKILL.md you just read>";

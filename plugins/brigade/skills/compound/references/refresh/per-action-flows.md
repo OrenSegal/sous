@@ -130,7 +130,7 @@ Do not let replacement subagents invent frontmatter fields, enum values, or sect
 1. Mark the learning as stale in place:
    - Add to frontmatter: `status: stale`, `stale_reason: [what you found]`, `stale_date: YYYY-MM-DD`
 2. Report what evidence was found and what is missing
-3. Recommend the user run `ce-compound` after their next encounter with that area
+3. Recommend the user run `compound` after their next encounter with that area
 
 ## Delete Flow
 

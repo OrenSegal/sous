@@ -1,8 +1,10 @@
 ---
-name: ce-retro
-description: "Look back over an agent session in this repo, the current one by default or any scope the user names across harnesses, and find what in the repo's environment keeps costing agents effort or leading them into mistakes, keeping only fixes the evidence shows are worth it. Lands the approved environment fixes and hands the rest to their owners. Use for a retro, postmortem, or papercut sweep of how agents worked in this repo. Use ce-compound to keep the lesson of one solved problem, and ce-debug for a bug in product code."
-argument-hint: "[scope: blank for this session, or e.g. last session, last two weeks, sessions where ce-plan ran]"
+name: retro
+description: "Look back over an agent session in this repo, the current one by default or any scope the user names across harnesses, and find what in the repo's environment keeps costing agents effort or leading them into mistakes, keeping only fixes the evidence shows are worth it. Lands the approved environment fixes and hands the rest to their owners. Use for a retro, postmortem, or papercut sweep of how agents worked in this repo. Use compound to keep the lesson of one solved problem, and ce-debug for a bug in product code."
+argument-hint: "[scope: blank for this session, or e.g. last session, last two weeks, sessions where a plan was written]"
 ---
+
+**Project files.** `CONCEPTS.md` means the glossary named by `glossary:` in `<repo-root>/.brigade/config.yaml`, and `CODING_STANDARDS.md` means the file named by `standards:`. Unset, they are `CONCEPTS.md` and `CODING_STANDARDS.md` at the repo root. Never create a second glossary or standards file next to the one the project already has.
 
 # Session Retro
 
@@ -24,17 +26,17 @@ Give each file you read its own tool call, so its output comes back on its own, 
 
 ## Authority
 
-Invoking this skill authorizes these actions without asking each time: reading the agent sessions in the scope `references/sessions-and-window.md` allows, running read-only checks against the tree, writing scratch files and the ledger, and, for items the user approved, editing environment files inside the repo (instruction files, docs, small scripts, the repo's harness settings), committing each such edit with only its own files, and invoking `ce-compound`, `ce-setup`, or `ce-plan` with an approved item. Tests of product behavior count as product code; a check whose subject is the repo itself, such as a test that scans files for a rule, is environment. It does not authorize editing product code, pushing, posting to any issue tracker, or writing a file outside the repo without that item's own diff approval. A project or user rule that requires asking first still wins. When one refuses an edit, report that item as stopped rather than finding another way to make it.
+Invoking this skill authorizes these actions without asking each time: reading the agent sessions in the scope `references/sessions-and-window.md` allows, running read-only checks against the tree, writing scratch files and the ledger, and, for items the user approved, editing environment files inside the repo (instruction files, docs, small scripts, the repo's harness settings), committing each such edit with only its own files, and invoking `compound`, a standards patch, or the project's planning flow with an approved item. Tests of product behavior count as product code; a check whose subject is the repo itself, such as a test that scans files for a rule, is environment. It does not authorize editing product code, pushing, posting to any issue tracker, or writing a file outside the repo without that item's own diff approval. A project or user rule that requires asking first still wins. When one refuses an edit, report that item as stopped rather than finding another way to make it.
 
 ## Writing to the user
 
-Invoke the `ce-noslop` skill before the approval account, and write the account and final report under its tests; without it, write plainly yourself. Talk about the user's repo, not this skill's machinery: words for its own steps, such as bar, candidate, miner, and batch, never reach the user.
+If the project has a plain-writing skill, invoke it before the approval account and write the account and final report under its tests; without one, write plainly yourself. Talk about the user's repo, not this skill's machinery: words for its own steps, such as bar, candidate, miner, and batch, never reach the user.
 
 ## Run
 
 Each step names the reference that governs it. Read that reference when you reach the step. A read made earlier, such as at skill load, does not count for the step.
 
-1. **Notice.** Your next output after reading this file is a short message to the user, written before any other tool call, even when they already stated their decisions or cannot reply. Write it plainly yourself; it does not wait for `ce-noslop`. Say which sessions you will read and why (this session by default, or the scope they named), what you are looking for, and that nothing in the repo or their settings changes until they approve it. When the run has to search for sessions, say that it briefly opens recent session files from other projects on this machine only to find this repo's. This is a notice, not a question; invoking the skill already asked for the run.
+1. **Notice.** Your next output after reading this file is a short message to the user, written before any other tool call, even when they already stated their decisions or cannot reply. Write it plainly yourself; it does not wait for a plain-writing skill. Say which sessions you will read and why (this session by default, or the scope they named), what you are looking for, and that nothing in the repo or their settings changes until they approve it. When the run has to search for sessions, say that it briefly opens recent session files from other projects on this machine only to find this repo's. This is a notice, not a question; invoking the skill already asked for the run.
 2. **Sessions and window.** Read `references/sessions-and-window.md`. It resolves this repo's directories, the ledger, and which sessions to read: the scope the user named, or this session by default.
 3. **Candidates and proof.** Read `references/candidates-and-proof.md`. It mines the sessions, combines what repeats across them, grades earlier accepted changes, and holds each candidate to the bar above.
 4. **Placement and routing.** Read `references/placement-and-routing.md`. It picks the cheapest fix for each candidate, where that fix lives, and who owns it.

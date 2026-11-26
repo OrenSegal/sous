@@ -4,7 +4,7 @@ This adds one test to classification, plus changes to `CODING_STANDARDS.md`. The
 
 ## The bar
 
-The bar is the `ce-durable-bar` paragraph under Preconditions in `SKILL.md`, the same one a capture applies before writing a learning. This audit applies it to learnings that were written before the bar existed, or that accreted past it.
+The bar is the `durable-bar` paragraph under Preconditions in `SKILL.md`, the same one a capture applies before writing a learning. This audit applies it to learnings that were written before the bar existed, or that accreted past it.
 
 ## Recoverability needs positive evidence
 
@@ -32,11 +32,11 @@ Read the `CODING_STANDARDS.md` files that govern the scope. A rule is not a doc,
 
 - **A check now covers the rule's whole class:** remove the rule. Quote the rule and the check.
 - **A check covers part of the class:** narrow the rule to what remains, and quote both.
-- **A doc is really an unenforced rule:** it is a standing always-or-never about a defect a reviewer can see in a diff, it carries no reasoning beyond the rule, and no check covers it. When a check could hold it, leave the doc and record the check under **Recommended**, because a refresh writes no checks. When no check could hold it and the bar below is met, add one condition to the `CODING_STANDARDS.md` nearest the code, in that file's style, then route the doc as recoverable. When the repo has no standards file, leave the doc as it is and record no finding: a repo without coding standards has made a valid choice, and `ce-setup` drafts rules from these docs whenever someone runs it. Nothing a refresh writes names `ce-setup` or a missing standards file. Only an attended report carries the one line `references/refresh/report.md` defines.
+- **A doc is really an unenforced rule:** it is a standing always-or-never about a defect a reviewer can see in a diff, it carries no reasoning beyond the rule, and no check covers it. When a check could hold it, leave the doc and record the check under **Recommended**, because a refresh writes no checks. When no check could hold it and the bar below is met, add one condition to the `CODING_STANDARDS.md` nearest the code, in that file's style, then route the doc as recoverable. When the repo has no standards file, leave the doc as it is and record no finding: a repo without coding standards has made a valid choice, and a later standards pass can draft rules from these docs. Nothing a refresh writes names a standards tool or a missing standards file. Only an attended report carries the one line `references/refresh/report.md` defines.
 
-<!-- ce-standards-bar:start -->
+<!-- standards-bar:start -->
 A defect class enters `CODING_STANDARDS.md` only when it appeared in a review finding the author fixed, a fix commit, a cleanup that removed it across the codebase, or a solution record, and no check covers it. State the class as a condition in a few sentences that stay true without naming volatile numbers or symbols, and group rules by area.
-<!-- ce-standards-bar:end -->
+<!-- standards-bar:end -->
 
 ## Report
 

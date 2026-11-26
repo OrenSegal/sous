@@ -1,9 +1,9 @@
 # Depth and session-history: why neither is a question
 
 ```bash
-/ce-compound [brief context]
-/ce-compound mode:non-interactive depth:lightweight [context]
-/ce-compound mode:non-interactive depth:full [context]
+/brigade:compound [brief context]
+/brigade:compound mode:non-interactive depth:lightweight [context]
+/brigade:compound mode:non-interactive depth:full [context]
 ```
 
 An interactive run picks its own depth rather than asking the user. Default to **Full**. Choose **Lightweight** only when the session is near its context limit.

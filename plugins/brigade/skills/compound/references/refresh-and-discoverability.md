@@ -29,7 +29,7 @@ Use these rules:
 - If context is already tight or you are in lightweight mode, do not expand into a broad refresh automatically; instead recommend a refresh as the next step with a scope hint
 - **In non-interactive mode**, never start a refresh and never ask the user. Put the recommended scope hint in the terminal report's "Refresh recommendation" line and let the caller decide
 
-**User-runnable refresh rendering.** When recommending a refresh rather than running it, default to `/ce-compound refresh <scope>`; use `$ce-compound refresh <scope>` only when the active host is Codex or explicitly documents dollar-prefixed skill invocation. Render only the invocation as inline code and output one form only.
+**User-runnable refresh rendering.** When recommending a refresh rather than running it, default to `/brigade:compound refresh <scope>`; use `$compound refresh <scope>` only when the active host is Codex or explicitly documents dollar-prefixed skill invocation. Render only the invocation as inline code and output one form only.
 
 When running or recommending a refresh, be explicit about the scope to pass. Prefer the narrowest useful scope:
 

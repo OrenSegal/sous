@@ -27,7 +27,7 @@ The orchestrator (main conversation) performs ALL of the following in one sequen
 7. **Frontmatter parser-safety check**: when a doc was written, validate the written doc exactly as in `references/assembly.md` Phase 2 step 8, using the same bundled-script existence guard and manual fallback checklist. Fix any violation and repeat the check; do not report success until the written frontmatter is parser-safe.
 8. **Skip specialized agent reviews** (`references/enhancement.md`) and the semantic grounding validator (`references/assembly.md` Phase 2.45 step 2) to conserve context
 
-**User-runnable retry rendering.** In the lightweight completion output below, default to `/ce-compound`; use `$ce-compound` only when the active host is Codex or explicitly documents dollar-prefixed skill invocation. Render only the invocation as inline code and output one form only.
+**User-runnable retry rendering.** In the lightweight completion output below, default to `/brigade:compound`; use `$compound` only when the active host is Codex or explicitly documents dollar-prefixed skill invocation. Render only the invocation as inline code and output one form only.
 
 **Lightweight completion output:** In non-interactive Lightweight, do not emit this interactive block; use the depth-specific report under `Non-interactive mode` in `references/report.md` instead. In interactive Lightweight, emit:
 ```
