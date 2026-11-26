@@ -47,7 +47,7 @@ flowchart LR
   CLI -->|"report, gate"| LOG
   CLI -->|"gate"| TR["bin/tests-ran"]
   CLI -->|"gate"| TW["bin/tests-weakened"]
-  MKT[".claude-plugin/marketplace.json"] --> PL["plugins/: blast-shield, cited, scoped, deuce, architecture-lint"]
+  MKT[".claude-plugin/marketplace.json"] --> PL["plugins/: blast-shield, cited, scoped, deuce, architecture-lint, brigade"]
 ```
 
 Why it is built this way, with the alternatives that were rejected:
@@ -97,6 +97,7 @@ different way an agent's work goes wrong, and each plugin installs on its own:
 | [handoff](mods/handoff) | A mod that writes a resume note and patch (`.claude/handoff/`) after each turn that changes the tree, so the next session can pick up | `claude plugin install handoff@sous` |
 | [deuce](plugins/deuce) | Branches and worktrees left behind after a merge (dry run first, audit log, undo) | `claude plugin install deuce@sous` |
 | [architecture-lint](plugins/architecture-lint) | Imports that cross a module boundary your architecture forbids, ratcheted against a baseline count | `claude plugin install architecture-lint@sous` |
+| [brigade](plugins/brigade) | Which model does each piece of work, what proves it is done per stack (iOS, web, API, data), and whether each mistake became a test or a rule | `claude plugin install brigade@sous` |
 
 Add the marketplace once with `claude plugin marketplace add OrenSegal/sous`.
 Each plugin under `plugins/` has its own README and tests; the rest of

@@ -1,0 +1,38 @@
+# Copy to <repo-root>/.brigade/config.yaml and edit. Every key is optional.
+
+glossary: CONCEPTS.md
+standards: CODING_STANDARDS.md
+docs_root: docs
+
+stacks:
+  web:
+    profile: web
+    paths: ["web/**", "apps/site/**"]
+    setup: npm ci
+    fast: npm run lint && npx tsc --noEmit
+    verify: npm test && npm run build
+    runtime: npm run dev
+
+  api:
+    profile: api
+    paths: ["api/**", "functions/**"]
+    fast: deno check functions/**/*.ts
+    verify: deno test functions
+
+  data:
+    profile: data
+    paths: ["migrations/**", "pipelines/**"]
+    fast: ruff check pipelines
+    verify: pytest pipelines
+
+  ios:
+    profile: ios
+    paths: ["ios/**"]
+    fast: swiftlint lint --quiet
+    verify: xcodebuild -scheme App -destination 'platform=iOS Simulator,name=iPhone 17' test
+
+protected:
+  - "**/auth/**"
+  - "**/payments/**"
+  - "migrations/**"
+  - "**/.env*"

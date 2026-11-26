@@ -107,6 +107,10 @@ jobs:
             os: ubuntu-latest
             setup: "true"
             test: ./tests/run.sh && shellcheck architecture-lint.sh tests/run.sh
+          - plugin: brigade
+            os: ubuntu-latest
+            setup: "true"
+            test: ./tests/run.sh && shellcheck tests/run.sh
     name: plugins/${{ matrix.plugin }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
