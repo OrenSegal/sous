@@ -46,9 +46,13 @@ A stage moves up a tier when its checks fail twice, when it touches a protected 
 
 Keep them. Map each one to a tier in your own docs and use brigade's agents for anything unmapped. Don't run both on the same stage.
 
+## Cost
+
+Every session pays only for the listing: the names and descriptions of four skills and four agents, about 2.4 KB (roughly 600 tokens). A skill or agent body loads only when it runs. `route` is 2.3 KB, each agent about 1 KB, and `routing.md` plus one stack file about 5 KB.
+
 ## Limits
 
-- The stack profiles are starting points. The commands in your `.brigade/config.yaml` decide what runs.
+- The stack profiles are starting points. The iOS profile comes from a working Swift project. The web, API and data profiles have not yet run on a real project. The commands in your `.brigade/config.yaml` decide what runs.
 - The routing tiers are defaults, not measurements. Your own retro and benchmark results should move them.
 - Plugin agents read their `model:` line unless `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set, which overrides it.
 
