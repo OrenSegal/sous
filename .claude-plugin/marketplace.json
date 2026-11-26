@@ -66,6 +66,16 @@
         "name": "Oren Segal"
       },
       "license": "Apache-2.0"
+    },
+    {
+      "name": "brigade",
+      "source": "./plugins/brigade",
+      "description": "Routes each piece of work to the cheapest model that can do it safely, checks it with a verify ladder per stack, and turns mistakes into tests, rules or notes.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Oren Segal"
+      },
+      "license": "MIT"
     }
   ]
 }
